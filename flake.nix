@@ -22,6 +22,7 @@
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
           config = {
+            toolchain.channel = "latest";
             github.ci.buildOutputs = [ ".#ci.${projectName}" ];
             github.ci.enable = false;
             just.importPaths = [ "justfile.custom.just" ];
