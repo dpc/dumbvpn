@@ -5,11 +5,15 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
+use argon2::Argon2;
 use clap::{Parser, Subcommand};
 use dumbvpn::EndpointTicket;
+use hmac::{Hmac, Mac};
 use iroh::endpoint::{presets, Accepting};
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
-use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
+use n0_error::{bail_any, AnyError, Result, StdResultExt};
+use rand::Rng;
+use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -24,7 +28,7 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 /// One side listens, the other side connects. Both sides are identified by a
 /// 32 byte endpoint id.
 ///
-/// Connecting to a endpoint id is independent of its IP address. Dumbpipe will
+/// Connecting to a endpoint id is independent of its IP address. Dumbvpn will
 /// try to establish a direct connection even through NATs and firewalls. If
 /// that fails, it will fall back to using a relay server.
 ///
@@ -118,19 +122,12 @@ pub struct CommonArgs {
     #[clap(long, default_value = None)]
     pub ipv6_addr: Option<SocketAddrV6>,
 
-    /// A custom ALPN to use for the endpoint.
+    /// The shared network secret for authentication.
     ///
-    /// This is an expert feature that allows dumbvpn to be used to interact
-    /// with existing iroh protocols.
-    ///
-    /// When using this option, the connect side must also specify the same
-    /// ALPN. The listen side will not expect a handshake, and the connect
-    /// side will not send one.
-    ///
-    /// Alpns are byte strings. To specify an utf8 string, prefix it with
-    /// `utf8:`. Otherwise, it will be parsed as a hex string.
-    #[clap(long)]
-    pub custom_alpn: Option<String>,
+    /// Both sides of a connection must use the same network secret.
+    /// The secret is stretched using argon2id before use.
+    #[clap(long, env = "DUMBVPN_NETWORK_SECRET")]
+    pub network_secret: String,
 
     /// Write the bound port number to a file.
     ///
@@ -141,27 +138,6 @@ pub struct CommonArgs {
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
-}
-
-impl CommonArgs {
-    fn alpn(&self) -> Result<Vec<u8>> {
-        Ok(match &self.custom_alpn {
-            Some(alpn) => parse_alpn(alpn)?,
-            None => dumbvpn::ALPN.to_vec(),
-        })
-    }
-
-    fn is_custom_alpn(&self) -> bool {
-        self.custom_alpn.is_some()
-    }
-}
-
-fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
-    Ok(if let Some(text) = alpn.strip_prefix("utf8:") {
-        text.as_bytes().to_vec()
-    } else {
-        hex::decode(alpn).anyerr()?
-    })
 }
 
 #[derive(Parser, Debug)]
@@ -341,6 +317,90 @@ async fn create_endpoint(
     Ok(endpoint)
 }
 
+/// Fixed salt for argon2id key derivation.
+///
+/// Both sides derive the same key from the same passphrase using this salt.
+/// A random salt isn't possible since both sides must independently arrive
+/// at the same key.
+const AUTH_SALT: &[u8] = b"dumbvpn-network-secret-v1";
+
+/// A symmetric key derived from a network secret passphrase via argon2id.
+#[derive(Clone, Copy)]
+struct NetworkKey([u8; 32]);
+
+impl NetworkKey {
+    /// Derive a network key from a passphrase using argon2id.
+    fn from_passphrase(passphrase: &str) -> Self {
+        let mut key = [0u8; 32];
+        Argon2::default()
+            .hash_password_into(passphrase.as_bytes(), AUTH_SALT, &mut key)
+            .expect("argon2 key derivation");
+        Self(key)
+    }
+
+    /// Compute HMAC-SHA256(self, data).
+    fn hmac(&self, data: &[u8]) -> [u8; 32] {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC accepts any key size");
+        mac.update(data);
+        mac.finalize().into_bytes().into()
+    }
+}
+
+const CHALLENGE_LEN: usize = 32;
+
+/// Listener-side authentication (challenge-response).
+///
+/// 1. Connector sends a 1-byte stream opener
+/// 2. Listener sends a 32-byte random challenge
+/// 3. Connector sends HMAC-SHA256(key, challenge)
+/// 4. Listener verifies
+///
+/// The connector writes first (1 byte) to satisfy QUIC stream setup, then the
+/// listener sends the challenge and the connector responds with the HMAC proof.
+async fn auth_accept(
+    send: &mut noq::SendStream,
+    recv: &mut noq::RecvStream,
+    key: &NetworkKey,
+) -> Result<()> {
+    // Read the stream opener byte from the connector.
+    let mut opener = [0u8; 1];
+    recv.read_exact(&mut opener).await.anyerr()?;
+
+    // Send a random challenge.
+    let challenge: [u8; CHALLENGE_LEN] = rand::rng().random();
+    send.write_all(&challenge).await.anyerr()?;
+
+    // Read and verify the HMAC response.
+    let mut response = [0u8; 32];
+    recv.read_exact(&mut response).await.anyerr()?;
+    if response != key.hmac(&challenge) {
+        bail_any!("authentication failed: invalid network secret");
+    }
+    Ok(())
+}
+
+/// Connector-side authentication (challenge-response).
+///
+/// Sends a stream opener byte, reads the challenge from the listener, then
+/// responds with HMAC-SHA256(key, challenge).
+async fn auth_connect(
+    send: &mut noq::SendStream,
+    recv: &mut noq::RecvStream,
+    key: &NetworkKey,
+) -> Result<()> {
+    // Send a stream opener byte.
+    send.write_all(&[0u8]).await.anyerr()?;
+
+    // Read the challenge from the listener.
+    let mut challenge = [0u8; CHALLENGE_LEN];
+    recv.read_exact(&mut challenge).await.anyerr()?;
+
+    // Send the HMAC response.
+    let response = key.hmac(&challenge);
+    send.write_all(&response).await.anyerr()?;
+    Ok(())
+}
+
 fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
     move |x| {
         token.cancel();
@@ -382,7 +442,8 @@ async fn forward_bidi(
 
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
+    let key = NetworkKey::from_passphrase(&args.common.network_secret);
+    let endpoint = create_endpoint(secret_key, &args.common, vec![dumbvpn::ALPN.to_vec()]).await?;
     // wait for the endpoint to figure out its home relay and addresses before
     // making a ticket
     if !is_local_only() && (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
@@ -414,7 +475,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
         };
         let remote_endpoint_id = &connection.remote_id();
         tracing::info!("got connection from {}", remote_endpoint_id);
-        let (s, mut r) = match connection.accept_bi().await {
+        let (mut s, mut r) = match connection.accept_bi().await {
             Ok(x) => x,
             Err(cause) => {
                 tracing::warn!("error accepting stream: {}", cause);
@@ -423,12 +484,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             }
         };
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
-        if !args.common.is_custom_alpn() {
-            // read the handshake and verify it
-            let mut buf = [0u8; dumbvpn::HANDSHAKE.len()];
-            r.read_exact(&mut buf).await.anyerr()?;
-            ensure_any!(buf == dumbvpn::HANDSHAKE, "invalid handshake");
-        }
+        auth_accept(&mut s, &mut r, &key).await?;
         if args.recv_only {
             tracing::info!(
                 "forwarding stdout to {} (ignoring stdin)",
@@ -447,25 +503,20 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
 
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
+    let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
     let addr = args.ticket.endpoint_addr();
     let remote_endpoint_id = addr.id;
     // connect to the remote, try only once
     let connection = endpoint
-        .connect(addr.clone(), &args.common.alpn()?)
+        .connect(addr.clone(), dumbvpn::ALPN)
         .await
         .anyerr()?;
     tracing::info!("connected to {}", remote_endpoint_id);
     // open a bidi stream, try only once
-    let (mut s, r) = connection.open_bi().await.anyerr()?;
+    let (mut s, mut r) = connection.open_bi().await.anyerr()?;
     tracing::info!("opened bidi stream to {}", remote_endpoint_id);
-    // send the handshake unless we are using a custom alpn
-    // when using a custom alpn, everything is up to the user
-    if !args.common.is_custom_alpn() {
-        // the connecting side must write first. we don't know if there will be
-        // something on stdin, so just write a handshake.
-        s.write_all(&dumbvpn::HANDSHAKE).await.anyerr()?;
-    }
+    auth_connect(&mut s, &mut r, &key).await?;
     if args.recv_only {
         tracing::info!(
             "forwarding stdout to {} (ignoring stdin)",
@@ -504,35 +555,26 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             return Ok(());
         }
     };
+    let key = NetworkKey::from_passphrase(&args.common.network_secret);
     async fn handle_tcp_accept(
         next: io::Result<(tokio::net::TcpStream, SocketAddr)>,
         addr: EndpointAddr,
         endpoint: Endpoint,
-        handshake: bool,
-        alpn: &[u8],
+        key: NetworkKey,
     ) -> Result<()> {
         let (tcp_stream, tcp_addr) = next.std_context("error accepting tcp connection")?;
         let (tcp_recv, tcp_send) = tcp_stream.into_split();
         tracing::info!("got tcp connection from {}", tcp_addr);
         let remote_endpoint_id = addr.id;
         let connection = endpoint
-            .connect(addr, alpn)
+            .connect(addr, dumbvpn::ALPN)
             .await
             .std_context(format!("error connecting to {remote_endpoint_id}"))?;
-        let (mut endpoint_send, endpoint_recv) = connection
+        let (mut endpoint_send, mut endpoint_recv) = connection
             .open_bi()
             .await
             .std_context(format!("error opening bidi stream to {remote_endpoint_id}"))?;
-        // send the handshake unless we are using a custom alpn
-        // when using a custom alpn, everything is up to the user
-        if handshake {
-            // the connecting side must write first. we don't know if there will be
-            // something on stdin, so just write a handshake.
-            endpoint_send
-                .write_all(&dumbvpn::HANDSHAKE)
-                .await
-                .anyerr()?;
-        }
+        auth_connect(&mut endpoint_send, &mut endpoint_recv, &key).await?;
         forward_bidi(tcp_recv, tcp_send, endpoint_recv, endpoint_send).await?;
         Ok::<_, AnyError>(())
     }
@@ -548,10 +590,8 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         };
         let endpoint = endpoint.clone();
         let addr = addr.clone();
-        let handshake = !args.common.is_custom_alpn();
-        let alpn = args.common.alpn()?;
         tokio::spawn(async move {
-            if let Err(cause) = handle_tcp_accept(next, addr, endpoint, handshake, &alpn).await {
+            if let Err(cause) = handle_tcp_accept(next, addr, endpoint, key).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -569,7 +609,8 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         Err(e) => bail_any!("invalid host string {}: {}", args.host, e),
     };
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
+    let key = NetworkKey::from_passphrase(&args.common.network_secret);
+    let endpoint = create_endpoint(secret_key, &args.common, vec![dumbvpn::ALPN.to_vec()]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     if !is_local_only() && (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
@@ -601,22 +642,17 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     async fn handle_endpoint_accept(
         accepting: Accepting,
         addrs: Vec<std::net::SocketAddr>,
-        handshake: bool,
+        key: NetworkKey,
     ) -> Result<()> {
         let connection = accepting.await.std_context("error accepting connection")?;
         let remote_endpoint_id = &connection.remote_id();
         tracing::info!("got connection from {}", remote_endpoint_id);
-        let (s, mut r) = connection
+        let (mut s, mut r) = connection
             .accept_bi()
             .await
             .std_context("error accepting stream")?;
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
-        if handshake {
-            // read the handshake and verify it
-            let mut buf = [0u8; dumbvpn::HANDSHAKE.len()];
-            r.read_exact(&mut buf).await.anyerr()?;
-            ensure_any!(buf == dumbvpn::HANDSHAKE, "invalid handshake");
-        }
+        auth_accept(&mut s, &mut r, &key).await?;
         let connection = tokio::net::TcpStream::connect(addrs.as_slice())
             .await
             .std_context(format!("error connecting to {addrs:?}"))?;
@@ -640,9 +676,8 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
             break;
         };
         let addrs = addrs.clone();
-        let handshake = !args.common.is_custom_alpn();
         tokio::spawn(async move {
-            if let Err(cause) = handle_endpoint_accept(connecting, addrs, handshake).await {
+            if let Err(cause) = handle_endpoint_accept(connecting, addrs, key).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -667,7 +702,8 @@ fn create_short_ticket(addr: &EndpointAddr) -> EndpointTicket {
 async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
     let secret_key = get_or_create_secret()?;
-    let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
+    let key = NetworkKey::from_passphrase(&args.common.network_secret);
+    let endpoint = create_endpoint(secret_key, &args.common, vec![dumbvpn::ALPN.to_vec()]).await?;
     // wait for the endpoint to figure out its address before making a ticket
     if !is_local_only() && (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
@@ -704,25 +740,18 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     async fn handle_endpoint_accept(
         accepting: Accepting,
         socket_path: PathBuf,
-        handshake: bool,
+        key: NetworkKey,
     ) -> Result<()> {
         tracing::trace!("accepting connection");
         let connection = accepting.await.std_context("error accepting connection")?;
         let remote_endpoint_id = &connection.remote_id();
         tracing::info!("got connection from {}", remote_endpoint_id);
-        let (s, mut r) = connection
+        let (mut s, mut r) = connection
             .accept_bi()
             .await
             .std_context("error accepting stream")?;
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
-        if handshake {
-            // read the handshake and verify it
-            tracing::trace!("reading handshake");
-            let mut buf = [0u8; dumbvpn::HANDSHAKE.len()];
-            r.read_exact(&mut buf).await.anyerr()?;
-            ensure_any!(buf == dumbvpn::HANDSHAKE, "invalid handshake");
-            tracing::trace!("handshake verified");
-        }
+        auth_accept(&mut s, &mut r, &key).await?;
         tracing::trace!("connecting to backend socket {:?}", socket_path);
         let connection = UnixStream::connect(&socket_path)
             .await
@@ -750,9 +779,8 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
             break;
         };
         let socket_path = socket_path.clone();
-        let handshake = !args.common.is_custom_alpn();
         tokio::spawn(async move {
-            if let Err(cause) = handle_endpoint_accept(connecting, socket_path, handshake).await {
+            if let Err(cause) = handle_endpoint_accept(connecting, socket_path, key).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -785,6 +813,7 @@ impl Drop for UnixSocketGuard {
 async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
     let secret_key = get_or_create_secret()?;
+    let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
         .std_context("unable to bind endpoint")?;
@@ -805,7 +834,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     let addr = args.ticket.endpoint_addr();
     tracing::info!("connecting to remote endpoint: {:?}", addr);
     let connection = endpoint
-        .connect(addr.clone(), &args.common.alpn()?)
+        .connect(addr.clone(), dumbvpn::ALPN)
         .await
         .std_context("failed to connect to remote endpoint")?;
     tracing::info!("connected to remote endpoint successfully");
@@ -821,7 +850,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     async fn handle_unix_accept(
         next: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
         connection: iroh::endpoint::Connection,
-        handshake: bool,
+        key: NetworkKey,
     ) -> Result<()> {
         tracing::trace!("handling new local connection");
         let (unix_stream, unix_addr) = next.std_context("error accepting unix connection")?;
@@ -829,24 +858,12 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         tracing::trace!("got unix connection from {:?}", unix_addr);
 
         tracing::trace!("opening bidi stream");
-        let (mut endpoint_send, endpoint_recv) = connection
+        let (mut endpoint_send, mut endpoint_recv) = connection
             .open_bi()
             .await
             .std_context("error opening bidi stream")?;
         tracing::trace!("bidi stream opened");
-
-        // send the handshake unless we are using a custom alpn
-        // when using a custom alpn, everything is up to the user
-        if handshake {
-            tracing::trace!("sending handshake");
-            // the connecting side must write first. we don't know if there will be
-            // something on stdin, so just write a handshake.
-            endpoint_send
-                .write_all(&dumbvpn::HANDSHAKE)
-                .await
-                .anyerr()?;
-            tracing::trace!("handshake sent");
-        }
+        auth_connect(&mut endpoint_send, &mut endpoint_recv, &key).await?;
 
         tracing::trace!("starting forward_bidi");
         forward_bidi(unix_recv, unix_send, endpoint_recv, endpoint_send).await?;
@@ -866,10 +883,9 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         };
         tracing::trace!("accepted a local connection");
         let connection = connection.clone();
-        let handshake = !args.common.is_custom_alpn();
         tokio::spawn(async move {
             tracing::trace!("spawning handler task");
-            if let Err(cause) = handle_unix_accept(next, connection, handshake).await {
+            if let Err(cause) = handle_unix_accept(next, connection, key).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal

@@ -31,11 +31,15 @@ fn test_secret() -> TestSecret {
     }
 }
 
+/// The shared network secret used for all tests.
+const TEST_NETWORK_SECRET: &str = "test-network-secret";
+
 /// Apply common test env vars to a duct command expression.
 fn test_env(cmd: duct::Expression, secret: &TestSecret) -> duct::Expression {
     cmd.env_remove("RUST_LOG")
         .env("DUMBVPN_LOCAL_ONLY", "1")
         .env("IROH_SECRET", &secret.secret_hex)
+        .env("DUMBVPN_NETWORK_SECRET", TEST_NETWORK_SECRET)
 }
 
 /// Get a free TCP port by briefly binding to port 0.
@@ -87,6 +91,42 @@ fn wait_for_tcp_connect(addr: &str, timeout: Duration) -> TcpStream {
     }
 }
 
+/// Verify that a wrong network secret causes the connection to fail.
+#[test]
+fn connect_listen_wrong_secret() {
+    let listen_secret = test_secret();
+    let connect_secret = test_secret();
+    let port_file = tempfile::NamedTempFile::new().unwrap();
+    let port_path = port_file.path().to_str().unwrap().to_string();
+
+    let _listen = test_env(
+        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        &listen_secret,
+    )
+    .stdin_bytes(b"hello from listen")
+    .stderr_null()
+    .stdout_capture()
+    .start()
+    .unwrap();
+
+    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+
+    // Connect with a different network secret — should fail.
+    let connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket])
+        .env_remove("RUST_LOG")
+        .env("DUMBVPN_LOCAL_ONLY", "1")
+        .env("IROH_SECRET", &connect_secret.secret_hex)
+        .env("DUMBVPN_NETWORK_SECRET", "wrong-secret")
+        .stdin_bytes(b"hello from connect")
+        .stderr_null()
+        .stdout_capture()
+        .unchecked()
+        .run()
+        .unwrap();
+
+    assert!(!connect.status.success());
+}
+
 /// Tests the basic functionality of the connect and listen pair
 ///
 /// Connect and listen both write a limited amount of data and then EOF.
@@ -115,63 +155,6 @@ fn connect_listen_happy() {
 
     let connect = test_env(
         duct::cmd(dumbvpn_bin(), ["connect", &ticket]),
-        &connect_secret,
-    )
-    .stdin_bytes(connect_to_listen)
-    .stderr_null()
-    .stdout_capture()
-    .run()
-    .unwrap();
-
-    assert!(connect.status.success());
-    assert_eq!(&connect.stdout, listen_to_connect);
-
-    let listen_out = listen.wait().unwrap();
-    assert_eq!(&listen_out.stdout, connect_to_listen);
-}
-
-/// Tests the basic functionality with a custom ALPN
-#[test]
-fn connect_listen_custom_alpn_happy() {
-    let listen_secret = test_secret();
-    let connect_secret = test_secret();
-    let port_file = tempfile::NamedTempFile::new().unwrap();
-    let port_path = port_file.path().to_str().unwrap().to_string();
-
-    let listen_to_connect = b"hello from listen";
-    let connect_to_listen = b"hello from connect";
-
-    let listen = test_env(
-        duct::cmd(
-            dumbvpn_bin(),
-            [
-                "listen",
-                "--port-path",
-                &port_path,
-                "--custom-alpn",
-                "utf8:mysuperalpn/0.1.0",
-            ],
-        ),
-        &listen_secret,
-    )
-    .stdin_bytes(listen_to_connect)
-    .stderr_null()
-    .stdout_capture()
-    .start()
-    .unwrap();
-
-    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
-
-    let connect = test_env(
-        duct::cmd(
-            dumbvpn_bin(),
-            [
-                "connect",
-                &ticket,
-                "--custom-alpn",
-                "utf8:mysuperalpn/0.1.0",
-            ],
-        ),
         &connect_secret,
     )
     .stdin_bytes(connect_to_listen)
@@ -502,6 +485,7 @@ mod unix_socket_tests {
             .env_remove("RUST_LOG")
             .env("DUMBVPN_LOCAL_ONLY", "1")
             .env("IROH_SECRET", &listen_secret.secret_hex)
+            .env("DUMBVPN_NETWORK_SECRET", TEST_NETWORK_SECRET)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -523,6 +507,7 @@ mod unix_socket_tests {
             .env_remove("RUST_LOG")
             .env("DUMBVPN_LOCAL_ONLY", "1")
             .env("IROH_SECRET", &connect_secret.secret_hex)
+            .env("DUMBVPN_NETWORK_SECRET", TEST_NETWORK_SECRET)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
