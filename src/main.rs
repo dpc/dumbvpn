@@ -157,6 +157,10 @@ pub struct ListenArgs {
     #[clap(long)]
     pub recv_only: bool,
 
+    /// Exit after handling a single data connection.
+    #[clap(long)]
+    pub one_shot: bool,
+
     #[clap(flatten)]
     pub gossip: GossipArgs,
 
@@ -440,8 +444,15 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     ));
 
     loop {
-        let Some(connecting) = endpoint.accept().await else {
-            break;
+        let connecting = select! {
+            connecting = endpoint.accept() => {
+                let Some(connecting) = connecting else { break };
+                connecting
+            }
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("got ctrl-c, exiting");
+                break;
+            }
         };
         let connection = match connecting.await {
             Ok(connection) => connection,
@@ -450,7 +461,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
                 continue;
             }
         };
-        let remote_endpoint_id = &connection.remote_id();
+        let remote_endpoint_id = connection.remote_id();
         tracing::info!("got connection from {}", remote_endpoint_id);
         let (mut s, mut r) = match connection.accept_bi().await {
             Ok(x) => x,
@@ -460,23 +471,38 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             }
         };
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
-        let rpc_id = rpc::auth_accept(&mut s, &mut r, &key).await?;
-        match rpc::dispatch_rpc(rpc_id, &mut s, &mut r, &node_map).await? {
-            RpcOutcome::Handled => continue,
-            RpcOutcome::DataForward => {}
+        let rpc_id = match rpc::auth_accept(&mut s, &mut r, &key).await {
+            Ok(id) => id,
+            Err(cause) => {
+                tracing::warn!("auth failed from {}: {}", remote_endpoint_id, cause);
+                continue;
+            }
+        };
+        match rpc::dispatch_rpc(rpc_id, &mut s, &mut r, &node_map).await {
+            Ok(RpcOutcome::Handled) => continue,
+            Ok(RpcOutcome::DataForward) => {}
+            Err(cause) => {
+                tracing::warn!("RPC error from {}: {}", remote_endpoint_id, cause);
+                continue;
+            }
         }
         if args.recv_only {
             tracing::info!(
                 "forwarding stdout to {} (ignoring stdin)",
                 remote_endpoint_id
             );
-            forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await?;
+            if let Err(e) = forward_bidi(tokio::io::empty(), tokio::io::stdout(), r, s).await {
+                tracing::warn!("data forwarding error: {e}");
+            }
         } else {
             tracing::info!("forwarding stdin/stdout to {}", remote_endpoint_id);
-            forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
+            if let Err(e) = forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await {
+                tracing::warn!("data forwarding error: {e}");
+            }
         }
-        // stop accepting connections after the first data connection
-        break;
+        if args.one_shot {
+            break;
+        }
     }
     cancel.cancel();
     Ok(())

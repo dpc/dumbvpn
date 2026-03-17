@@ -115,7 +115,10 @@ fn connect_listen_wrong_secret() {
     let port_path = port_file.path().to_str().unwrap().to_string();
 
     let _listen = test_env(
-        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        duct::cmd(
+            dumbvpn_bin(),
+            ["listen", "--one-shot", "--port-path", &port_path],
+        ),
         &listen_secret,
     )
     .stdin_bytes(b"hello from listen")
@@ -160,7 +163,10 @@ fn connect_listen_happy() {
     let connect_to_listen = b"hello from connect";
 
     let listen = test_env(
-        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        duct::cmd(
+            dumbvpn_bin(),
+            ["listen", "--one-shot", "--port-path", &port_path],
+        ),
         &listen_secret,
     )
     .stdin_bytes(listen_to_connect)
@@ -199,7 +205,10 @@ fn connect_listen_ctrlc_connect() {
     let port_path = port_file.path().to_str().unwrap().to_string();
 
     let listen = test_env(
-        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        duct::cmd(
+            dumbvpn_bin(),
+            ["listen", "--one-shot", "--port-path", &port_path],
+        ),
         &listen_secret,
     )
     .stdin_bytes(b"hello from listen\n")
@@ -245,7 +254,10 @@ fn connect_listen_ctrlc_listen() {
     let port_path = port_file.path().to_str().unwrap().to_string();
 
     let mut listen = test_env(
-        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        duct::cmd(
+            dumbvpn_bin(),
+            ["listen", "--one-shot", "--port-path", &port_path],
+        ),
         &listen_secret,
     )
     .stderr_null()
@@ -344,7 +356,10 @@ fn connect_tcp_happy() {
     let port_path = port_file.path().to_str().unwrap().to_string();
 
     let _listen = test_env(
-        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        duct::cmd(
+            dumbvpn_bin(),
+            ["listen", "--one-shot", "--port-path", &port_path],
+        ),
         &listen_secret,
     )
     .stdin_bytes(b"hello from listen\n")
