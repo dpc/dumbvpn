@@ -8,7 +8,6 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use dumbvpn::node_map::NodeMap;
 use dumbvpn::rpc::{self, NetworkKey, RpcOutcome};
-use dumbvpn::EndpointTicket;
 use iroh::endpoint::{presets, Accepting};
 use iroh::{Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey};
 use n0_error::{bail_any, AnyError, Result, StdResultExt};
@@ -185,8 +184,12 @@ pub struct ConnectTcpArgs {
     #[clap(long)]
     pub addr: String,
 
-    /// The endpoint to connect to
-    pub ticket: EndpointTicket,
+    /// The endpoint ID to connect to
+    pub node_id: PublicKey,
+
+    /// Direct IP address hint for the remote node. Repeatable.
+    #[clap(long)]
+    pub direct_addr: Vec<SocketAddr>,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -194,8 +197,12 @@ pub struct ConnectTcpArgs {
 
 #[derive(Parser, Debug)]
 pub struct ConnectArgs {
-    /// The endpoint to connect to
-    pub ticket: EndpointTicket,
+    /// The endpoint ID to connect to
+    pub node_id: PublicKey,
+
+    /// Direct IP address hint for the remote node. Repeatable.
+    #[clap(long)]
+    pub direct_addr: Vec<SocketAddr>,
 
     /// Immediately close our sending side, indicating that we will not transmit
     /// any data
@@ -227,8 +234,12 @@ pub struct ConnectUnixArgs {
     #[clap(long)]
     pub socket_path: PathBuf,
 
-    /// The endpoint to connect to
-    pub ticket: EndpointTicket,
+    /// The endpoint ID to connect to
+    pub node_id: PublicKey,
+
+    /// Direct IP address hint for the remote node. Repeatable.
+    #[clap(long)]
+    pub direct_addr: Vec<SocketAddr>,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -236,11 +247,24 @@ pub struct ConnectUnixArgs {
 
 #[derive(Parser, Debug)]
 pub struct ListNodesArgs {
-    /// Node address to query (public key or full ticket)
-    pub node_addr: dumbvpn::NodeAddr,
+    /// The endpoint ID to query
+    pub node_id: PublicKey,
+
+    /// Direct IP address hint for the remote node. Repeatable.
+    #[clap(long)]
+    pub direct_addr: Vec<SocketAddr>,
 
     #[clap(flatten)]
     pub common: CommonArgs,
+}
+
+/// Build an `EndpointAddr` from a public key and optional direct address hints.
+fn build_endpoint_addr(node_id: PublicKey, direct_addrs: &[SocketAddr]) -> EndpointAddr {
+    let mut addr = EndpointAddr::new(node_id);
+    for a in direct_addrs {
+        addr = addr.with_ip_addr(*a);
+    }
+    addr
 }
 
 /// Copy from a reader to a noq stream.
@@ -402,7 +426,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     tracing::info!("node addr: {}", addr.id);
 
     let node_name = resolve_node_name(&args.gossip);
-    let node_map = NodeMap::new(node_name.clone(), addr.clone());
+    let node_map = NodeMap::new(node_name.clone(), addr.id);
     let cancel = CancellationToken::new();
 
     // Spawn gossip loop.
@@ -462,7 +486,7 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
-    let addr = args.ticket.endpoint_addr();
+    let addr = build_endpoint_addr(args.node_id, &args.direct_addr);
     let remote_endpoint_id = addr.id;
     // connect to the remote, try only once
     let connection = endpoint
@@ -535,7 +559,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         forward_bidi(tcp_recv, tcp_send, endpoint_recv, endpoint_send).await?;
         Ok::<_, AnyError>(())
     }
-    let addr = args.ticket.endpoint_addr();
+    let addr = build_endpoint_addr(args.node_id, &args.direct_addr);
     loop {
         // also wait for ctrl-c here so we can use it before accepting a connection
         let next = tokio::select! {
@@ -576,7 +600,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     tracing::info!("node addr: {}", addr.id);
 
     let node_name = resolve_node_name(&args.gossip);
-    let node_map = NodeMap::new(node_name.clone(), addr.clone());
+    let node_map = NodeMap::new(node_name.clone(), addr.id);
     let cancel = CancellationToken::new();
 
     // Spawn gossip loop.
@@ -661,7 +685,7 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     tracing::info!("node addr: {}", addr.id);
 
     let node_name = resolve_node_name(&args.gossip);
-    let node_map = NodeMap::new(node_name.clone(), addr.clone());
+    let node_map = NodeMap::new(node_name.clone(), addr.id);
     let cancel = CancellationToken::new();
 
     // Spawn gossip loop.
@@ -777,7 +801,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         }
     }
 
-    let addr = args.ticket.endpoint_addr();
+    let addr = build_endpoint_addr(args.node_id, &args.direct_addr);
     tracing::info!("connecting to remote endpoint: {:?}", addr);
     let connection = endpoint
         .connect(addr.clone(), dumbvpn::ALPN)
@@ -848,14 +872,10 @@ async fn list_nodes(args: ListNodesArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
-    let addr = args.node_addr.endpoint_addr();
-    let remote_endpoint_id = addr.id;
+    let addr = build_endpoint_addr(args.node_id, &args.direct_addr);
 
-    let connection = endpoint
-        .connect(addr.clone(), dumbvpn::ALPN)
-        .await
-        .anyerr()?;
-    tracing::info!("connected to {}", remote_endpoint_id);
+    let connection = endpoint.connect(addr, dumbvpn::ALPN).await.anyerr()?;
+    tracing::info!("connected to {}", args.node_id);
 
     let (mut s, mut r) = connection.open_bi().await.anyerr()?;
     rpc::auth_connect(&mut s, &mut r, &key, rpc::RPC_LIST_NODES).await?;
@@ -865,13 +885,7 @@ async fn list_nodes(args: ListNodesArgs) -> Result<()> {
         postcard::from_bytes(&resp_data).map_err(|e| AnyError::from(e.to_string()))?;
 
     for node in &resp.nodes {
-        println!("{}\t{}", node.name, node.addr.id);
-        for ip in node.addr.ip_addrs() {
-            println!("  addr: {ip}");
-        }
-        for relay in node.addr.relay_urls() {
-            println!("  relay: {relay}");
-        }
+        println!("{}\t{}", node.name, node.id);
     }
 
     Ok(())

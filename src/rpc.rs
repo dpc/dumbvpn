@@ -183,7 +183,7 @@ async fn handle_gossip(
 
     tracing::info!("gossip: received node info for '{}'", req.node.name);
 
-    let exclude_key = req.node.addr.id;
+    let exclude_key = req.node.id;
     node_map.insert(req.node).await;
     let response_node = node_map.pick_random(Some(&exclude_key)).await;
 

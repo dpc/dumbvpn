@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use iroh::{EndpointAddr, PublicKey};
+use iroh::PublicKey;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub name: String,
-    pub addr: EndpointAddr,
+    pub id: PublicKey,
 }
 
 #[derive(Clone)]
@@ -19,9 +19,9 @@ pub struct NodeMap {
 
 impl NodeMap {
     /// Create a new node map containing only our own entry.
-    pub fn new(name: String, addr: EndpointAddr) -> Self {
+    pub fn new(name: String, id: PublicKey) -> Self {
         let mut map = HashMap::new();
-        map.insert(name.clone(), NodeInfo { name, addr });
+        map.insert(name.clone(), NodeInfo { name, id });
         Self {
             inner: Arc::new(RwLock::new(map)),
         }
@@ -37,7 +37,7 @@ impl NodeMap {
         let map = self.inner.read().await;
         let candidates: Vec<_> = map
             .values()
-            .filter(|n| exclude.is_none_or(|pk| n.addr.id != *pk))
+            .filter(|n| exclude.is_none_or(|pk| n.id != *pk))
             .collect();
         if candidates.is_empty() {
             None
@@ -57,25 +57,18 @@ impl NodeMap {
         self.inner.read().await.values().cloned().collect()
     }
 
-    /// Collect gossip candidates: addresses from `initial_peers` (preferring
-    /// richer info from the map) plus all other known nodes, excluding
-    /// `own_name`.
+    /// Collect gossip candidate public keys, excluding `own_name`.
     pub async fn gossip_candidates(
         &self,
         own_name: &str,
         initial_peers: &[PublicKey],
-    ) -> Vec<EndpointAddr> {
+    ) -> Vec<PublicKey> {
         let map = self.inner.read().await;
-        let mut addrs: Vec<EndpointAddr> = Vec::new();
+        let mut keys: Vec<PublicKey> = Vec::new();
 
-        // Add initial peers, preferring their address from the map if available.
+        // Add initial peers.
         for pk in initial_peers {
-            let from_map = map.values().find(|n| n.addr.id == *pk);
-            if let Some(node) = from_map {
-                addrs.push(node.addr.clone());
-            } else {
-                addrs.push(EndpointAddr::new(*pk));
-            }
+            keys.push(*pk);
         }
 
         // Add all other known nodes not already in the list.
@@ -83,12 +76,12 @@ impl NodeMap {
             if node.name == own_name {
                 continue;
             }
-            if addrs.iter().any(|a| a.id == node.addr.id) {
+            if keys.contains(&node.id) {
                 continue;
             }
-            addrs.push(node.addr.clone());
+            keys.push(node.id);
         }
 
-        addrs
+        keys
     }
 }

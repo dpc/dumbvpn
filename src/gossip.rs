@@ -1,4 +1,4 @@
-use iroh::{Endpoint, PublicKey};
+use iroh::{Endpoint, EndpointAddr, PublicKey};
 use n0_error::{AnyError, Result, StdResultExt};
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
@@ -58,11 +58,11 @@ async fn gossip_once(
     }
 
     let idx = rand::rng().random_range(0..candidates.len());
-    let target = &candidates[idx];
-    tracing::info!("gossip: connecting to {}", target.id);
+    let target = candidates[idx];
+    tracing::info!("gossip: connecting to {}", target);
 
     let connection = endpoint
-        .connect(target.clone(), crate::ALPN)
+        .connect(EndpointAddr::new(target), crate::ALPN)
         .await
         .std_context("gossip: failed to connect")?;
 
@@ -75,9 +75,9 @@ async fn gossip_once(
 
     // Pick a random node to share (excluding the target, since it already
     // knows about itself).
-    let to_share = node_map.pick_random(Some(&target.id)).await;
+    let to_share = node_map.pick_random(Some(&target)).await;
     let Some(node) = to_share else {
-        tracing::debug!("gossip: nothing to share with {}", target.id);
+        tracing::debug!("gossip: nothing to share with {}", target);
         return Ok(());
     };
 

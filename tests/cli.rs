@@ -1,11 +1,11 @@
 #![cfg_attr(target_os = "windows", allow(unused_imports, dead_code))]
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
-use dumbvpn::{EndpointAddr, EndpointTicket, SecretKey};
+use dumbvpn::SecretKey;
 
 fn dumbvpn_bin() -> &'static str {
     env!("CARGO_BIN_EXE_dumbvpn")
@@ -69,13 +69,27 @@ fn wait_for_file(path: &Path, timeout: Duration) -> String {
     }
 }
 
-/// Read the port file written by `--port-path` and construct a ticket.
-fn read_ticket(port_path: &Path, public: &iroh::PublicKey, timeout: Duration) -> String {
+/// Connection info for a test node: the public key string and a direct address.
+struct TestNodeAddr {
+    node_id: String,
+    direct_addr: String,
+}
+
+/// Read the port file and build connection info for a test node.
+fn read_node_addr(port_path: &Path, public: &iroh::PublicKey, timeout: Duration) -> TestNodeAddr {
     let port_str = wait_for_file(port_path, timeout);
     let port: u16 = port_str.trim().parse().unwrap();
-    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    let endpoint_addr = EndpointAddr::new(*public).with_ip_addr(addr);
-    EndpointTicket::new(endpoint_addr).to_string()
+    TestNodeAddr {
+        node_id: public.to_string(),
+        direct_addr: format!("127.0.0.1:{port}"),
+    }
+}
+
+impl TestNodeAddr {
+    /// Return CLI args for a connect-style subcommand.
+    fn connect_args(&self) -> Vec<&str> {
+        vec![&self.node_id, "--direct-addr", &self.direct_addr]
+    }
 }
 
 /// Poll until a TCP connection to `addr` succeeds, then return the stream.
@@ -110,10 +124,12 @@ fn connect_listen_wrong_secret() {
     .start()
     .unwrap();
 
-    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+    let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
 
     // Connect with a different network secret — should fail.
-    let connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket])
+    let mut args = vec!["connect"];
+    args.extend(target.connect_args());
+    let connect = duct::cmd(dumbvpn_bin(), &args)
         .env_remove("RUST_LOG")
         .env("DUMBVPN_LOCAL_ONLY", "1")
         .env("DUMBVPN_PUBLIC", "true")
@@ -153,17 +169,16 @@ fn connect_listen_happy() {
     .start()
     .unwrap();
 
-    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+    let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
+    let mut args = vec!["connect"];
+    args.extend(target.connect_args());
 
-    let connect = test_env(
-        duct::cmd(dumbvpn_bin(), ["connect", &ticket]),
-        &connect_secret,
-    )
-    .stdin_bytes(connect_to_listen)
-    .stderr_null()
-    .stdout_capture()
-    .run()
-    .unwrap();
+    let connect = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
+        .stdin_bytes(connect_to_listen)
+        .stderr_null()
+        .stdout_capture()
+        .run()
+        .unwrap();
 
     assert!(connect.status.success());
     assert_eq!(&connect.stdout, listen_to_connect);
@@ -193,16 +208,15 @@ fn connect_listen_ctrlc_connect() {
     .reader()
     .unwrap();
 
-    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+    let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
+    let mut args = vec!["connect"];
+    args.extend(target.connect_args());
 
-    let mut connect = test_env(
-        duct::cmd(dumbvpn_bin(), ["connect", &ticket]),
-        &connect_secret,
-    )
-    .stderr_null()
-    .stdout_capture()
-    .reader()
-    .unwrap();
+    let mut connect = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
+        .stderr_null()
+        .stdout_capture()
+        .reader()
+        .unwrap();
 
     // wait until we get data from the listen process
     let mut buf = [0u8; 1];
@@ -239,16 +253,15 @@ fn connect_listen_ctrlc_listen() {
     .reader()
     .unwrap();
 
-    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+    let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
+    let mut args = vec!["connect"];
+    args.extend(target.connect_args());
 
-    let mut connect = test_env(
-        duct::cmd(dumbvpn_bin(), ["connect", &ticket]),
-        &connect_secret,
-    )
-    .stderr_null()
-    .stdout_capture()
-    .reader()
-    .unwrap();
+    let mut connect = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
+        .stderr_null()
+        .stdout_capture()
+        .reader()
+        .unwrap();
 
     // Give the connection time to establish before sending SIGINT.
     // iroh handles retries internally, but we need the connection to be up
@@ -305,18 +318,17 @@ fn listen_tcp_happy() {
     .start()
     .unwrap();
 
-    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+    let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
+    let mut args = vec!["connect"];
+    args.extend(target.connect_args());
 
-    let connect = test_env(
-        duct::cmd(dumbvpn_bin(), ["connect", &ticket]),
-        &connect_secret,
-    )
-    .stderr_null()
-    .stdout_capture()
-    .stdin_bytes(b"hello from connect")
-    .unchecked()
-    .run()
-    .unwrap();
+    let connect = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
+        .stderr_null()
+        .stdout_capture()
+        .stdin_bytes(b"hello from connect")
+        .unchecked()
+        .run()
+        .unwrap();
 
     assert_eq!(&connect.stdout, b"hello from tcp");
 }
@@ -341,19 +353,15 @@ fn connect_tcp_happy() {
     .start()
     .unwrap();
 
-    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+    let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
+    let mut args = vec!["connect-tcp", "--addr", &host_port];
+    args.extend(target.connect_args());
 
-    let _connect_tcp = test_env(
-        duct::cmd(
-            dumbvpn_bin(),
-            ["connect-tcp", "--addr", &host_port, &ticket],
-        ),
-        &connect_secret,
-    )
-    .stderr_null()
-    .stdout_null()
-    .start()
-    .unwrap();
+    let _connect_tcp = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
+        .stderr_null()
+        .stdout_null()
+        .start()
+        .unwrap();
 
     // Wait for connect-tcp to bind its TCP port.
     let mut conn = wait_for_tcp_connect(&host_port, Duration::from_secs(10));
@@ -495,7 +503,7 @@ mod unix_socket_tests {
         let listen_stderr = listen_proc.stderr.take().unwrap();
         let listen_stderr_thread = drain_stderr(listen_stderr, "listen-unix-stderr");
 
-        let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+        let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
 
         // Launch connect-unix, exposing the client socket.
         let mut connect_proc = std::process::Command::new(dumbvpn_bin())
@@ -503,7 +511,9 @@ mod unix_socket_tests {
                 "connect-unix",
                 "--socket-path",
                 client_sock.to_str().unwrap(),
-                &ticket,
+                &target.node_id,
+                "--direct-addr",
+                &target.direct_addr,
             ])
             .env_remove("RUST_LOG")
             .env("DUMBVPN_LOCAL_ONLY", "1")
@@ -574,16 +584,15 @@ fn list_nodes_returns_self() {
     .start()
     .unwrap();
 
-    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+    let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
+    let mut args = vec!["list-nodes"];
+    args.extend(target.connect_args());
 
-    let output = test_env(
-        duct::cmd(dumbvpn_bin(), ["list-nodes", &ticket]),
-        &query_secret,
-    )
-    .stderr_null()
-    .stdout_capture()
-    .run()
-    .unwrap();
+    let output = test_env(duct::cmd(dumbvpn_bin(), &args), &query_secret)
+        .stderr_null()
+        .stdout_capture()
+        .run()
+        .unwrap();
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
