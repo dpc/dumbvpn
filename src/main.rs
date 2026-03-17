@@ -236,8 +236,8 @@ pub struct ConnectUnixArgs {
 
 #[derive(Parser, Debug)]
 pub struct ListNodesArgs {
-    /// The endpoint to query
-    pub ticket: EndpointTicket,
+    /// Node address to query (public key or full ticket)
+    pub node_addr: dumbvpn::NodeAddr,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -292,19 +292,10 @@ async fn copy_from_noq(
 }
 
 /// Get the secret key or generate a new one.
-///
-/// Print the secret key to stderr if it was generated, so the user can save it.
 fn get_or_create_secret() -> Result<SecretKey> {
     match std::env::var("IROH_SECRET") {
         Ok(secret) => SecretKey::from_str(&secret).std_context("invalid secret"),
-        Err(_) => {
-            let key = SecretKey::generate(&mut rand::rng());
-            eprintln!(
-                "using secret key {}",
-                data_encoding::HEXLOWER.encode(&key.to_bytes())
-            );
-            Ok(key)
-        }
+        Err(_) => Ok(SecretKey::generate(&mut rand::rng())),
     }
 }
 
@@ -408,8 +399,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
         eprintln!("Warning: Failed to connect to the home relay");
     }
     let addr = endpoint.addr();
-    let short = create_short_ticket(&addr);
-    let ticket = EndpointTicket::new(addr.clone());
+    tracing::info!("node addr: {}", addr.id);
 
     let node_name = resolve_node_name(&args.gossip);
     let node_map = NodeMap::new(node_name.clone(), addr.clone());
@@ -424,14 +414,6 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
         args.gossip.gossip_node.clone(),
         cancel.clone(),
     ));
-
-    // print the ticket on stderr so it doesn't interfere with the data itself
-    //
-    // note that the tests rely on the ticket being the last thing printed
-    eprintln!("Listening. To connect, use:\ndumbvpn connect {ticket}");
-    if args.common.verbose > 0 {
-        eprintln!("or:\ndumbvpn connect {short}");
-    }
 
     loop {
         let Some(connecting) = endpoint.accept().await else {
@@ -591,8 +573,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         eprintln!("Warning: Failed to connect to the home relay");
     }
     let addr = endpoint.addr();
-    let short = create_short_ticket(&addr);
-    let ticket = EndpointTicket::new(addr.clone());
+    tracing::info!("node addr: {}", addr.id);
 
     let node_name = resolve_node_name(&args.gossip);
     let node_map = NodeMap::new(node_name.clone(), addr.clone());
@@ -607,25 +588,6 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         args.gossip.gossip_node.clone(),
         cancel.clone(),
     ));
-
-    // print the ticket on stderr so it doesn't interfere with the data itself
-    //
-    // note that the tests rely on the ticket being the last thing printed
-    eprintln!("Forwarding incoming requests to '{}'.", args.host);
-    eprintln!("To connect, use e.g.:");
-    eprintln!("dumbvpn connect-tcp {ticket}");
-    if args.common.verbose > 0 {
-        eprintln!("or:\ndumbvpn connect-tcp {short}");
-    }
-    tracing::info!("endpoint id is {}", ticket.endpoint_addr().id);
-    tracing::info!(
-        "relay url is {:?}",
-        ticket
-            .endpoint_addr()
-            .relay_urls()
-            .next()
-            .map_or("None".to_string(), |url| url.to_string())
-    );
 
     // handle a new incoming connection on the endpoint
     async fn handle_endpoint_accept(
@@ -684,15 +646,6 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     Ok(())
 }
 
-/// Creates a ticket that only includes the id and any relay urls
-fn create_short_ticket(addr: &EndpointAddr) -> EndpointTicket {
-    let mut short = EndpointAddr::new(addr.id);
-    for relay_url in addr.relay_urls() {
-        short = short.with_relay_url(relay_url.clone());
-    }
-    short.into()
-}
-
 #[cfg(unix)]
 /// Listen on an endpoint and forward incoming connections to a Unix socket.
 async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
@@ -705,8 +658,7 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         eprintln!("Warning: Failed to connect to the home relay");
     }
     let addr = endpoint.addr();
-    let short = create_short_ticket(&addr);
-    let ticket = EndpointTicket::new(addr.clone());
+    tracing::info!("node addr: {}", addr.id);
 
     let node_name = resolve_node_name(&args.gossip);
     let node_map = NodeMap::new(node_name.clone(), addr.clone());
@@ -721,30 +673,6 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         args.gossip.gossip_node.clone(),
         cancel.clone(),
     ));
-
-    // print the ticket on stderr so it doesn't interfere with the data itself
-    //
-    // note that the tests rely on the ticket being the last thing printed
-    eprintln!(
-        "Forwarding incoming requests to '{}'.",
-        socket_path.display()
-    );
-    eprintln!("To connect, use e.g.:");
-    eprintln!("dumbvpn connect-unix --socket-path /path/to/client.sock {ticket}");
-    eprintln!("dumbvpn connect-tcp --addr 127.0.0.1:8080 {ticket}");
-    if args.common.verbose > 0 {
-        eprintln!("or:\ndumbvpn connect-unix --socket-path /path/to/client.sock {short}");
-        eprintln!("dumbvpn connect-tcp --addr 127.0.0.1:8080 {short}");
-    }
-    tracing::info!("endpoint id is {}", ticket.endpoint_addr().id);
-    tracing::info!(
-        "relay url is {:?}",
-        ticket
-            .endpoint_addr()
-            .relay_urls()
-            .next()
-            .map_or("None".to_string(), |url| url.to_string())
-    );
 
     // handle a new incoming connection on the endpoint
     async fn handle_endpoint_accept(
@@ -920,7 +848,7 @@ async fn list_nodes(args: ListNodesArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
-    let addr = args.ticket.endpoint_addr();
+    let addr = args.node_addr.endpoint_addr();
     let remote_endpoint_id = addr.id;
 
     let connection = endpoint
