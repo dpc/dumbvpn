@@ -1,5 +1,5 @@
 [package]
-name = "dumbpipe"
+name = "dumbvpn"
 version = "0.35.0"
 edition = "2021"
 authors = ["Rüdiger Klaehn <rklaehn@protonmail.com>", "n0 team"]
@@ -7,7 +7,7 @@ keywords = ["netcat", "cli", "network", "p2p", "holepunching"]
 categories = ["network-programming"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/n0-computer/dumbpipe"
-description = "A cli tool to pipe data over the network, with NAT hole punching"
+description = "A cli tool to create a dumb VPN over the network, with NAT hole punching"
 readme = "README.md"
 
 # Sadly this also needs to be updated in .github/workflows/ci.yml

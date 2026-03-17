@@ -1,5 +1,5 @@
 {
-  description = "dumbpipe - a cli tool to pipe data over the network";
+  description = "dumbvpn - a cli tool to create a dumb VPN over the network";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
@@ -18,7 +18,7 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        projectName = "dumbpipe";
+        projectName = "dumbvpn";
 
         flakeboxLib = flakebox.lib.mkLib pkgs {
           config = {

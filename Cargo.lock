@@ -703,7 +703,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dumbpipe"
+name = "dumbvpn"
 version = "0.35.0"
 dependencies = [
  "clap",

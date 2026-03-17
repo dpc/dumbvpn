@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use dumbpipe::EndpointTicket;
+use dumbvpn::EndpointTicket;
 use iroh::endpoint::{presets, Accepting};
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
@@ -46,7 +46,7 @@ pub enum Commands {
     /// Generate a short endpoint ticket. This ticket can be used to later
     /// connect to a listener that is using the same secret key again.
     ///
-    /// This command only really makes sense when you are providing dumbpipe
+    /// This command only really makes sense when you are providing dumbvpn
     /// with a secret key.
     GenerateTicket,
 
@@ -122,7 +122,7 @@ pub struct CommonArgs {
 
     /// A custom ALPN to use for the endpoint.
     ///
-    /// This is an expert feature that allows dumbpipe to be used to interact
+    /// This is an expert feature that allows dumbvpn to be used to interact
     /// with existing iroh protocols.
     ///
     /// When using this option, the connect side must also specify the same
@@ -143,7 +143,7 @@ impl CommonArgs {
     fn alpn(&self) -> Result<Vec<u8>> {
         Ok(match &self.custom_alpn {
             Some(alpn) => parse_alpn(alpn)?,
-            None => dumbpipe::ALPN.to_vec(),
+            None => dumbvpn::ALPN.to_vec(),
         })
     }
 
@@ -372,9 +372,9 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
     // note that the tests rely on the ticket being the last thing printed
-    eprintln!("Listening. To connect, use:\ndumbpipe connect {ticket}");
+    eprintln!("Listening. To connect, use:\ndumbvpn connect {ticket}");
     if args.common.verbose > 0 {
-        eprintln!("or:\ndumbpipe connect {short}");
+        eprintln!("or:\ndumbvpn connect {short}");
     }
 
     loop {
@@ -402,9 +402,9 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
         if !args.common.is_custom_alpn() {
             // read the handshake and verify it
-            let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
+            let mut buf = [0u8; dumbvpn::HANDSHAKE.len()];
             r.read_exact(&mut buf).await.anyerr()?;
-            ensure_any!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+            ensure_any!(buf == dumbvpn::HANDSHAKE, "invalid handshake");
         }
         if args.recv_only {
             tracing::info!(
@@ -441,7 +441,7 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     if !args.common.is_custom_alpn() {
         // the connecting side must write first. we don't know if there will be
         // something on stdin, so just write a handshake.
-        s.write_all(&dumbpipe::HANDSHAKE).await.anyerr()?;
+        s.write_all(&dumbvpn::HANDSHAKE).await.anyerr()?;
     }
     if args.recv_only {
         tracing::info!(
@@ -506,7 +506,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             // the connecting side must write first. we don't know if there will be
             // something on stdin, so just write a handshake.
             endpoint_send
-                .write_all(&dumbpipe::HANDSHAKE)
+                .write_all(&dumbvpn::HANDSHAKE)
                 .await
                 .anyerr()?;
         }
@@ -560,9 +560,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     // note that the tests rely on the ticket being the last thing printed
     eprintln!("Forwarding incoming requests to '{}'.", args.host);
     eprintln!("To connect, use e.g.:");
-    eprintln!("dumbpipe connect-tcp {ticket}");
+    eprintln!("dumbvpn connect-tcp {ticket}");
     if args.common.verbose > 0 {
-        eprintln!("or:\ndumbpipe connect-tcp {short}");
+        eprintln!("or:\ndumbvpn connect-tcp {short}");
     }
     tracing::info!("endpoint id is {}", ticket.endpoint_addr().id);
     tracing::info!(
@@ -590,9 +590,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
         if handshake {
             // read the handshake and verify it
-            let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
+            let mut buf = [0u8; dumbvpn::HANDSHAKE.len()];
             r.read_exact(&mut buf).await.anyerr()?;
-            ensure_any!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+            ensure_any!(buf == dumbvpn::HANDSHAKE, "invalid handshake");
         }
         let connection = tokio::net::TcpStream::connect(addrs.as_slice())
             .await
@@ -661,11 +661,11 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         socket_path.display()
     );
     eprintln!("To connect, use e.g.:");
-    eprintln!("dumbpipe connect-unix --socket-path /path/to/client.sock {ticket}");
-    eprintln!("dumbpipe connect-tcp --addr 127.0.0.1:8080 {ticket}");
+    eprintln!("dumbvpn connect-unix --socket-path /path/to/client.sock {ticket}");
+    eprintln!("dumbvpn connect-tcp --addr 127.0.0.1:8080 {ticket}");
     if args.common.verbose > 0 {
-        eprintln!("or:\ndumbpipe connect-unix --socket-path /path/to/client.sock {short}");
-        eprintln!("dumbpipe connect-tcp --addr 127.0.0.1:8080 {short}");
+        eprintln!("or:\ndumbvpn connect-unix --socket-path /path/to/client.sock {short}");
+        eprintln!("dumbvpn connect-tcp --addr 127.0.0.1:8080 {short}");
     }
     tracing::info!("endpoint id is {}", ticket.endpoint_addr().id);
     tracing::info!(
@@ -695,9 +695,9 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         if handshake {
             // read the handshake and verify it
             tracing::trace!("reading handshake");
-            let mut buf = [0u8; dumbpipe::HANDSHAKE.len()];
+            let mut buf = [0u8; dumbvpn::HANDSHAKE.len()];
             r.read_exact(&mut buf).await.anyerr()?;
-            ensure_any!(buf == dumbpipe::HANDSHAKE, "invalid handshake");
+            ensure_any!(buf == dumbvpn::HANDSHAKE, "invalid handshake");
             tracing::trace!("handshake verified");
         }
         tracing::trace!("connecting to backend socket {:?}", socket_path);
@@ -819,7 +819,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
             // the connecting side must write first. we don't know if there will be
             // something on stdin, so just write a handshake.
             endpoint_send
-                .write_all(&dumbpipe::HANDSHAKE)
+                .write_all(&dumbvpn::HANDSHAKE)
                 .await
                 .anyerr()?;
             tracing::trace!("handshake sent");

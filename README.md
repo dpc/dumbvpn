@@ -1,6 +1,6 @@
-# Dumb pipe
+# Dumb VPN
 
-This is an example to use [iroh](https://crates.io/crates/iroh) to create a dumb pipe to connect two machines with a QUIC connection.
+This is an example to use [iroh](https://crates.io/crates/iroh) to create a dumb VPN to connect two machines with a QUIC connection.
 
 Iroh will take care of hole punching and NAT traversal whenever possible, and fall back to a
 relay if hole punching does not succeed.
@@ -8,25 +8,25 @@ relay if hole punching does not succeed.
 It is also useful as a standalone tool for quick copy jobs.
 
 This is inspired by the unix tool [netcat](https://en.wikipedia.org/wiki/Netcat). While netcat
-works with IP addresses, dumbpipe works with 256 bit endpoint ids and therefore is somewhat location transparent. In addition, connections are encrypted using TLS.
+works with IP addresses, dumbvpn works with 256 bit endpoint ids and therefore is somewhat location transparent. In addition, connections are encrypted using TLS.
 
 # Installation
 
 With [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html):
 
 ```
-cargo install dumbpipe
+cargo install dumbvpn
 ```
 
 If you've installed [Homebrew](https://brew.sh), you can install it using the following command:
 
 ```
-brew install dumbpipe
+brew install dumbvpn
 ```
 
 # Examples
 
-## Use dumbpipe to stream video using [ffmpeg / ffplay](https://ffmpeg.org/):
+## Use dumbvpn to stream video using [ffmpeg / ffplay](https://ffmpeg.org/):
 
 This is using standard input and output.
 
@@ -34,17 +34,17 @@ This is using standard input and output.
 
 On Mac OS:
 ```
-ffmpeg -f avfoundation -r 30 -i "0" -pix_fmt yuv420p -f mpegts - | dumbpipe listen
+ffmpeg -f avfoundation -r 30 -i "0" -pix_fmt yuv420p -f mpegts - | dumbvpn listen
 ```
 On Linux:
 ```
-ffmpeg -f v4l2 -i /dev/video0 -r 30 -preset ultrafast -vcodec libx264 -tune zerolatency -f mpegts - | dumbpipe listen
+ffmpeg -f v4l2 -i /dev/video0 -r 30 -preset ultrafast -vcodec libx264 -tune zerolatency -f mpegts - | dumbvpn listen
 ```
 outputs ticket
 
 ### Receiver side
 ```
-dumbpipe connect endpointealvvv4nwa522qhznqrblv6jxcrgnvpapvakxw5i6mwltmm6ps2r4aicamaakdu5wtjasadei2qdfuqjadakqk3t2ieq | ffplay -f mpegts -fflags nobuffer -framedrop -
+dumbvpn connect endpointealvvv4nwa522qhznqrblv6jxcrgnvpapvakxw5i6mwltmm6ps2r4aicamaakdu5wtjasadei2qdfuqjadakqk3t2ieq | ffplay -f mpegts -fflags nobuffer -framedrop -
 ```
 
 - Adjust the ffmpeg options according to your local platform and video capture devices.
@@ -57,14 +57,14 @@ Sharing a terminal session over the internet is useful for collaboration between
 On the server:
 
 ```
-$ dumbpipe listen-tcp --host localhost:8000 &
+$ dumbvpn listen-tcp --host localhost:8000 &
 $ tty-share
 ```
 
 On the client(s):
 
 ```
-$ dumbpipe connect-tcp --addr localhost:8000 <ticket> &
+$ dumbvpn connect-tcp --addr localhost:8000 <ticket> &
 $ tty-share http://localhost:8000/s/local/
 ```
 
@@ -79,24 +79,24 @@ npm run dev
 >    - Local:        http://localhost:3000
 ```
 
-### The dumbpipe listener
+### The dumbvpn listener
 
 *Listens* on an endpoint and forwards all incoming requests to the dev web
 server that is listening on localhost on port 3000. Any number of connections can
 flow through a single dumb pipe, but they will be separate local tcp connections.
 
 ```
-dumbpipe listen-tcp --host localhost:3000
+dumbvpn listen-tcp --host localhost:3000
 ```
 This command will output a ticket that can be used to connect.
 
-### The dumbpipe connector
+### The dumbvpn connector
 
 *Listens* on a tcp interface and port on the local machine. In this case on port 3001.
 Forwards all incoming connections to the endpoint given in the ticket.
 
 ```
-dumbpipe connect-tcp --addr 0.0.0.0:3001 <ticket>
+dumbvpn connect-tcp --addr 0.0.0.0:3001 <ticket>
 ```
 
 ### Testing it
@@ -118,7 +118,7 @@ zellij --version
 # zellij 0.42.2
 # Forward the remote Zellij socket
 # Socket path follows pattern: /tmp/zellij-0/<VERSION>/<session-name>
-dumbpipe listen-unix --socket-path /tmp/zellij-0/0.42.2/remote-task-1234
+dumbvpn listen-unix --socket-path /tmp/zellij-0/0.42.2/remote-task-1234
 ```
 
 This will give you a `<ticket>`.
@@ -133,7 +133,7 @@ zellij --version
 mkdir -p /tmp/zj-remote/0.42.1
 
 # Create a local socket connected to the remote one
-dumbpipe connect-unix --socket-path /tmp/zj-remote/0.42.1/remote-task-1234 <ticket>
+dumbvpn connect-unix --socket-path /tmp/zj-remote/0.42.1/remote-task-1234 <ticket>
 ```
 
 3. Attach your local Zellij client:
@@ -151,10 +151,10 @@ You can mix and match listeners. For example, forward from a remote Unix socket 
 
 ```bash
 # Machine A: Listen on a Unix socket
-dumbpipe listen-unix --socket-path /var/run/my-app.sock
+dumbvpn listen-unix --socket-path /var/run/my-app.sock
 
 # Machine B: Connect to it via a local TCP port
-dumbpipe connect-tcp --addr 127.0.0.1:8080 <ticket>
+dumbvpn connect-tcp --addr 127.0.0.1:8080 <ticket>
 ```
 
 ## Custom ALPNs
@@ -166,7 +166,7 @@ E.g. here is how to interact with the iroh-blobs
 protocol:
 
 ```
-echo request1.bin | dumbpipe connect <ticket> --custom-alpn utf8:/iroh-bytes/2 > response1.bin
+echo request1.bin | dumbvpn connect <ticket> --custom-alpn utf8:/iroh-bytes/2 > response1.bin
 ```
 
 (`/iroh-bytes/2` is the ALPN string for the iroh-blobs protocol, which used to be called iroh-bytes.)

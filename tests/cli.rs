@@ -5,12 +5,12 @@ use std::str::FromStr;
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
-use dumbpipe::EndpointTicket;
+use dumbvpn::EndpointTicket;
 use rand::Rng;
 
 // binary path
-fn dumbpipe_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_dumbpipe")
+fn dumbvpn_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_dumbvpn")
 }
 
 /// Read `n` lines from `reader`, returning the bytes read including the
@@ -57,7 +57,7 @@ fn connect_listen_happy() {
     // the bytes provided by the listen command
     let listen_to_connect = b"hello from listen";
     let connect_to_listen = b"hello from connect";
-    let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
+    let mut listen = duct::cmd(dumbvpn_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
         .stdin_bytes(listen_to_connect)
         .stderr_to_stdout() //
@@ -69,7 +69,7 @@ fn connect_listen_happy() {
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = EndpointTicket::from_str(ticket).unwrap();
 
-    let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
+    let connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
         .stdin_bytes(connect_to_listen)
         .stderr_null()
@@ -96,7 +96,7 @@ fn connect_listen_custom_alpn_happy() {
     let listen_to_connect = b"hello from listen";
     let connect_to_listen = b"hello from connect";
     let mut listen = duct::cmd(
-        dumbpipe_bin(),
+        dumbvpn_bin(),
         ["listen", "--custom-alpn", "utf8:mysuperalpn/0.1.0"],
     )
     .env_remove("RUST_LOG") // disable tracing
@@ -111,7 +111,7 @@ fn connect_listen_custom_alpn_happy() {
     let ticket = EndpointTicket::from_str(ticket).unwrap();
 
     let connect = duct::cmd(
-        dumbpipe_bin(),
+        dumbvpn_bin(),
         [
             "connect",
             &ticket.to_string(),
@@ -140,7 +140,7 @@ fn connect_listen_ctrlc_connect() {
     use nix::sys::signal::{self, Signal};
     use nix::unistd::Pid;
     // the bytes provided by the listen command
-    let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
+    let mut listen = duct::cmd(dumbvpn_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
         .stdin_bytes(b"hello from listen\n")
         .stderr_to_stdout() //
@@ -152,7 +152,7 @@ fn connect_listen_ctrlc_connect() {
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = EndpointTicket::from_str(ticket).unwrap();
 
-    let mut connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
+    let mut connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
         .stderr_null()
         .stdout_capture()
@@ -179,7 +179,7 @@ fn connect_listen_ctrlc_listen() {
     use nix::sys::signal::{self, Signal};
     use nix::unistd::Pid;
     // the bytes provided by the listen command
-    let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
+    let mut listen = duct::cmd(dumbvpn_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
         .stderr_to_stdout()
         .reader()
@@ -190,7 +190,7 @@ fn connect_listen_ctrlc_listen() {
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = EndpointTicket::from_str(ticket).unwrap();
 
-    let mut connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
+    let mut connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
         .stderr_null()
         .stdout_capture()
@@ -229,8 +229,8 @@ fn listen_tcp_happy() {
     });
     // wait for the tcp listener to start
     b2.wait();
-    // start a dumbpipe listen-tcp process
-    let mut listen_tcp = duct::cmd(dumbpipe_bin(), ["listen-tcp", "--host", &host_port])
+    // start a dumbvpn listen-tcp process
+    let mut listen_tcp = duct::cmd(dumbvpn_bin(), ["listen-tcp", "--host", &host_port])
         .env_remove("RUST_LOG") // disable tracing
         .stderr_to_stdout() //
         .reader()
@@ -240,7 +240,7 @@ fn listen_tcp_happy() {
     let ticket = header.split_ascii_whitespace().last().unwrap();
     let ticket = EndpointTicket::from_str(ticket).unwrap();
     // poke the listen-tcp process with a connect command
-    let connect = duct::cmd(dumbpipe_bin(), ["connect", &ticket.to_string()])
+    let connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
         .stderr_null()
         .stdout_capture()
@@ -255,9 +255,9 @@ fn listen_tcp_happy() {
 fn connect_tcp_happy() {
     let port = random_port();
     let host_port = format!("localhost:{port}");
-    // start a dumbpipe listen process just so the connect-tcp command has something
+    // start a dumbvpn listen process just so the connect-tcp command has something
     // to connect to
-    let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
+    let mut listen = duct::cmd(dumbvpn_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
         .stdin_bytes(b"hello from listen\n")
         .stderr_to_stdout() //
@@ -269,9 +269,9 @@ fn connect_tcp_happy() {
     let ticket = EndpointTicket::from_str(ticket).unwrap();
     let ticket = ticket.to_string();
 
-    // start a dumbpipe connect-tcp process
+    // start a dumbvpn connect-tcp process
     let _connect_tcp = duct::cmd(
-        dumbpipe_bin(),
+        dumbvpn_bin(),
         ["connect-tcp", "--addr", &host_port, &ticket],
     )
     .env_remove("RUST_LOG") // disable tracing
@@ -413,7 +413,7 @@ mod unix_socket_tests {
         }
 
         // Launch listen-unix targeting the backend.
-        let mut listen_proc = std::process::Command::new(dumbpipe_bin())
+        let mut listen_proc = std::process::Command::new(dumbvpn_bin())
             .args([
                 "listen-unix",
                 "--socket-path",
@@ -447,7 +447,7 @@ mod unix_socket_tests {
         });
 
         // Launch connect-unix, exposing the client socket.
-        let mut connect_proc = std::process::Command::new(dumbpipe_bin())
+        let mut connect_proc = std::process::Command::new(dumbvpn_bin())
             .args([
                 "connect-unix",
                 "--socket-path",
