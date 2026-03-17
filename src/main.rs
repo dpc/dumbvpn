@@ -7,7 +7,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use dumbvpn::EndpointTicket;
 use iroh::endpoint::{presets, Accepting};
-use iroh::{Endpoint, EndpointAddr, SecretKey};
+use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::select;
@@ -299,6 +299,14 @@ fn get_or_create_secret() -> Result<SecretKey> {
     }
 }
 
+/// Whether to run in local-only mode, without relay or address lookup services.
+///
+/// This is useful for testing in sandboxed environments where no outgoing
+/// network connections are allowed.
+fn is_local_only() -> bool {
+    std::env::var("DUMBVPN_LOCAL_ONLY").is_ok()
+}
+
 /// Create a new iroh endpoint.
 async fn create_endpoint(
     secret_key: SecretKey,
@@ -308,6 +316,11 @@ async fn create_endpoint(
     let mut builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .alpns(alpns);
+    if is_local_only() {
+        builder = builder
+            .relay_mode(RelayMode::Disabled)
+            .clear_address_lookup();
+    }
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr(addr)?;
     }
@@ -362,7 +375,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its home relay and addresses before
     // making a ticket
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+    if !is_local_only() && (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
     }
     let addr = endpoint.addr();
@@ -470,7 +483,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     tracing::info!("tcp listening on {:?}", addrs);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+    if !is_local_only() && (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
     }
 
@@ -548,7 +561,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+    if !is_local_only() && (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
     }
     let addr = endpoint.addr();
@@ -646,7 +659,7 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
     // wait for the endpoint to figure out its address before making a ticket
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+    if !is_local_only() && (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
     }
     let addr = endpoint.addr();
@@ -768,7 +781,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     tracing::info!("unix listening on {:?}", socket_path);
 
     // Wait for our own endpoint to be ready before trying to connect.
-    if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
+    if !is_local_only() && (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
     }
 

@@ -59,6 +59,7 @@ fn connect_listen_happy() {
     let connect_to_listen = b"hello from connect";
     let mut listen = duct::cmd(dumbvpn_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
+        .env("DUMBVPN_LOCAL_ONLY", "1")
         .stdin_bytes(listen_to_connect)
         .stderr_to_stdout() //
         .reader()
@@ -71,6 +72,7 @@ fn connect_listen_happy() {
 
     let connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
+        .env("DUMBVPN_LOCAL_ONLY", "1")
         .stdin_bytes(connect_to_listen)
         .stderr_null()
         .stdout_capture()
@@ -100,6 +102,7 @@ fn connect_listen_custom_alpn_happy() {
         ["listen", "--custom-alpn", "utf8:mysuperalpn/0.1.0"],
     )
     .env_remove("RUST_LOG") // disable tracing
+    .env("DUMBVPN_LOCAL_ONLY", "1")
     .stdin_bytes(listen_to_connect)
     .stderr_to_stdout() //
     .reader()
@@ -120,6 +123,7 @@ fn connect_listen_custom_alpn_happy() {
         ],
     )
     .env_remove("RUST_LOG") // disable tracing
+    .env("DUMBVPN_LOCAL_ONLY", "1")
     .stdin_bytes(connect_to_listen)
     .stderr_null()
     .stdout_capture()
@@ -142,6 +146,7 @@ fn connect_listen_ctrlc_connect() {
     // the bytes provided by the listen command
     let mut listen = duct::cmd(dumbvpn_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
+        .env("DUMBVPN_LOCAL_ONLY", "1")
         .stdin_bytes(b"hello from listen\n")
         .stderr_to_stdout() //
         .reader()
@@ -154,6 +159,7 @@ fn connect_listen_ctrlc_connect() {
 
     let mut connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
+        .env("DUMBVPN_LOCAL_ONLY", "1")
         .stderr_null()
         .stdout_capture()
         .reader()
@@ -181,6 +187,7 @@ fn connect_listen_ctrlc_listen() {
     // the bytes provided by the listen command
     let mut listen = duct::cmd(dumbvpn_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
+        .env("DUMBVPN_LOCAL_ONLY", "1")
         .stderr_to_stdout()
         .reader()
         .unwrap();
@@ -192,6 +199,7 @@ fn connect_listen_ctrlc_listen() {
 
     let mut connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
+        .env("DUMBVPN_LOCAL_ONLY", "1")
         .stderr_null()
         .stdout_capture()
         .reader()
@@ -232,6 +240,7 @@ fn listen_tcp_happy() {
     // start a dumbvpn listen-tcp process
     let mut listen_tcp = duct::cmd(dumbvpn_bin(), ["listen-tcp", "--host", &host_port])
         .env_remove("RUST_LOG") // disable tracing
+        .env("DUMBVPN_LOCAL_ONLY", "1")
         .stderr_to_stdout() //
         .reader()
         .unwrap();
@@ -242,6 +251,7 @@ fn listen_tcp_happy() {
     // poke the listen-tcp process with a connect command
     let connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket.to_string()])
         .env_remove("RUST_LOG") // disable tracing
+        .env("DUMBVPN_LOCAL_ONLY", "1")
         .stderr_null()
         .stdout_capture()
         .stdin_bytes(b"hello from connect")
@@ -259,6 +269,7 @@ fn connect_tcp_happy() {
     // to connect to
     let mut listen = duct::cmd(dumbvpn_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
+        .env("DUMBVPN_LOCAL_ONLY", "1")
         .stdin_bytes(b"hello from listen\n")
         .stderr_to_stdout() //
         .reader()
@@ -275,6 +286,7 @@ fn connect_tcp_happy() {
         ["connect-tcp", "--addr", &host_port, &ticket],
     )
     .env_remove("RUST_LOG") // disable tracing
+    .env("DUMBVPN_LOCAL_ONLY", "1")
     .stderr_to_stdout() //
     .reader()
     .unwrap();
@@ -420,6 +432,7 @@ mod unix_socket_tests {
                 backend_sock.to_str().unwrap(),
             ])
             .env_remove("RUST_LOG")
+            .env("DUMBVPN_LOCAL_ONLY", "1")
             .stdout(std::process::Stdio::null()) // We don't need stdout
             .stderr(std::process::Stdio::piped()) // We must read stderr
             .spawn()
@@ -455,6 +468,7 @@ mod unix_socket_tests {
                 &ticket,
             ])
             .env_remove("RUST_LOG")
+            .env("DUMBVPN_LOCAL_ONLY", "1")
             .stdout(std::process::Stdio::null()) // We don't need stdout
             .stderr(std::process::Stdio::piped()) // We must read stderr
             .spawn()

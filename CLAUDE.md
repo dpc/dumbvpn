@@ -1,6 +1,6 @@
-# Dumbpipe
+# Dumbvpn
 
-A CLI tool to pipe data over the network using iroh for NAT hole punching and end-to-end encryption. Think netcat but with QUIC, 256-bit endpoint IDs instead of IP addresses, and automatic relay fallback.
+A CLI tool to create a dumb VPN over the network using iroh for NAT hole punching and end-to-end encryption. Think netcat but with QUIC, 256-bit endpoint IDs instead of IP addresses, and automatic relay fallback.
 
 ## Build & Dev
 
@@ -41,11 +41,12 @@ Single-crate Rust project (not a workspace):
 - `n0_error::Result<T>` with `.anyerr()?` and `.std_context()` for error handling
 - `tokio::select!` for concurrent async branches
 - Environment variable `IROH_SECRET` for persistent endpoint identity (hex-encoded Ed25519 key)
+- Environment variable `DUMBVPN_LOCAL_ONLY` disables relay and address lookup for sandboxed/offline testing
 - Unix socket support is `#[cfg(unix)]`-gated
 
 ## Testing
 
-Integration tests in `tests/cli.rs` use `duct` to spawn dumbvpn processes and verify data roundtrips through various forwarding modes. Some tests are `#[ignore = "flaky"]` due to network timing. Tests use `nix::signal` for Ctrl-C simulation on Unix.
+Integration tests in `tests/cli.rs` use `duct` to spawn dumbvpn processes and verify data roundtrips through various forwarding modes. Tests set `DUMBVPN_LOCAL_ONLY=1` to avoid external network access (relay, DNS discovery), relying on localhost direct addresses in the ticket. Some tests are `#[ignore = "flaky"]` due to network timing. Tests use `nix::signal` for Ctrl-C simulation on Unix.
 
 ## CI
 
