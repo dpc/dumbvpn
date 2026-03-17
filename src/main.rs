@@ -5,15 +5,13 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use argon2::Argon2;
 use clap::{Parser, Subcommand};
+use dumbvpn::node_map::NodeMap;
+use dumbvpn::rpc::{self, NetworkKey, RpcOutcome};
 use dumbvpn::EndpointTicket;
-use hmac::{Hmac, Mac};
 use iroh::endpoint::{presets, Accepting};
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
+use iroh::{Endpoint, EndpointAddr, PublicKey, RelayMode, SecretKey};
 use n0_error::{bail_any, AnyError, Result, StdResultExt};
-use rand::Rng;
-use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
@@ -104,6 +102,9 @@ pub enum Commands {
     /// As far as the endpoint is concerned, this is connecting. But it is
     /// listening on a Unix socket for which you have to specify the path.
     ConnectUnix(ConnectUnixArgs),
+
+    /// Query a listening node for all known nodes in the network.
+    ListNodes(ListNodesArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -140,12 +141,27 @@ pub struct CommonArgs {
     pub verbose: u8,
 }
 
+/// Gossip-related arguments shared by all listen subcommands.
+#[derive(Parser, Debug)]
+pub struct GossipArgs {
+    /// Name of this node. Defaults to hostname.
+    #[clap(long)]
+    pub node_name: Option<String>,
+
+    /// Public key of a gossip peer. Repeatable.
+    #[clap(long)]
+    pub gossip_node: Vec<PublicKey>,
+}
+
 #[derive(Parser, Debug)]
 pub struct ListenArgs {
     /// Immediately close our sending side, indicating that we will not transmit
     /// any data
     #[clap(long)]
     pub recv_only: bool,
+
+    #[clap(flatten)]
+    pub gossip: GossipArgs,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -155,6 +171,9 @@ pub struct ListenArgs {
 pub struct ListenTcpArgs {
     #[clap(long)]
     pub host: String,
+
+    #[clap(flatten)]
+    pub gossip: GossipArgs,
 
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -197,6 +216,9 @@ pub struct ListenUnixArgs {
     pub socket_path: PathBuf,
 
     #[clap(flatten)]
+    pub gossip: GossipArgs,
+
+    #[clap(flatten)]
     pub common: CommonArgs,
 }
 
@@ -208,6 +230,15 @@ pub struct ConnectUnixArgs {
     pub socket_path: PathBuf,
 
     /// The endpoint to connect to
+    pub ticket: EndpointTicket,
+
+    #[clap(flatten)]
+    pub common: CommonArgs,
+}
+
+#[derive(Parser, Debug)]
+pub struct ListNodesArgs {
+    /// The endpoint to query
     pub ticket: EndpointTicket,
 
     #[clap(flatten)]
@@ -317,90 +348,6 @@ async fn create_endpoint(
     Ok(endpoint)
 }
 
-/// Fixed salt for argon2id key derivation.
-///
-/// Both sides derive the same key from the same passphrase using this salt.
-/// A random salt isn't possible since both sides must independently arrive
-/// at the same key.
-const AUTH_SALT: &[u8] = b"dumbvpn-network-secret-v1";
-
-/// A symmetric key derived from a network secret passphrase via argon2id.
-#[derive(Clone, Copy)]
-struct NetworkKey([u8; 32]);
-
-impl NetworkKey {
-    /// Derive a network key from a passphrase using argon2id.
-    fn from_passphrase(passphrase: &str) -> Self {
-        let mut key = [0u8; 32];
-        Argon2::default()
-            .hash_password_into(passphrase.as_bytes(), AUTH_SALT, &mut key)
-            .expect("argon2 key derivation");
-        Self(key)
-    }
-
-    /// Compute HMAC-SHA256(self, data).
-    fn hmac(&self, data: &[u8]) -> [u8; 32] {
-        let mut mac = Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC accepts any key size");
-        mac.update(data);
-        mac.finalize().into_bytes().into()
-    }
-}
-
-const CHALLENGE_LEN: usize = 32;
-
-/// Listener-side authentication (challenge-response).
-///
-/// 1. Connector sends a 1-byte stream opener
-/// 2. Listener sends a 32-byte random challenge
-/// 3. Connector sends HMAC-SHA256(key, challenge)
-/// 4. Listener verifies
-///
-/// The connector writes first (1 byte) to satisfy QUIC stream setup, then the
-/// listener sends the challenge and the connector responds with the HMAC proof.
-async fn auth_accept(
-    send: &mut noq::SendStream,
-    recv: &mut noq::RecvStream,
-    key: &NetworkKey,
-) -> Result<()> {
-    // Read the stream opener byte from the connector.
-    let mut opener = [0u8; 1];
-    recv.read_exact(&mut opener).await.anyerr()?;
-
-    // Send a random challenge.
-    let challenge: [u8; CHALLENGE_LEN] = rand::rng().random();
-    send.write_all(&challenge).await.anyerr()?;
-
-    // Read and verify the HMAC response.
-    let mut response = [0u8; 32];
-    recv.read_exact(&mut response).await.anyerr()?;
-    if response != key.hmac(&challenge) {
-        bail_any!("authentication failed: invalid network secret");
-    }
-    Ok(())
-}
-
-/// Connector-side authentication (challenge-response).
-///
-/// Sends a stream opener byte, reads the challenge from the listener, then
-/// responds with HMAC-SHA256(key, challenge).
-async fn auth_connect(
-    send: &mut noq::SendStream,
-    recv: &mut noq::RecvStream,
-    key: &NetworkKey,
-) -> Result<()> {
-    // Send a stream opener byte.
-    send.write_all(&[0u8]).await.anyerr()?;
-
-    // Read the challenge from the listener.
-    let mut challenge = [0u8; CHALLENGE_LEN];
-    recv.read_exact(&mut challenge).await.anyerr()?;
-
-    // Send the HMAC response.
-    let response = key.hmac(&challenge);
-    send.write_all(&response).await.anyerr()?;
-    Ok(())
-}
-
 fn cancel_token<T>(token: CancellationToken) -> impl Fn(T) -> T {
     move |x| {
         token.cancel();
@@ -440,6 +387,16 @@ async fn forward_bidi(
     Ok(())
 }
 
+/// Resolve the node name from args or hostname.
+fn resolve_node_name(gossip: &GossipArgs) -> String {
+    gossip.node_name.clone().unwrap_or_else(|| {
+        hostname::get()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .unwrap_or_else(|| "unknown".to_string())
+    })
+}
+
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
@@ -451,7 +408,21 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
     }
     let addr = endpoint.addr();
     let short = create_short_ticket(&addr);
-    let ticket = EndpointTicket::new(addr);
+    let ticket = EndpointTicket::new(addr.clone());
+
+    let node_name = resolve_node_name(&args.gossip);
+    let node_map = NodeMap::new(node_name.clone(), addr.clone());
+    let cancel = CancellationToken::new();
+
+    // Spawn gossip loop.
+    let _gossip_handle = tokio::spawn(dumbvpn::gossip::gossip_loop(
+        endpoint.clone(),
+        key,
+        node_map.clone(),
+        node_name,
+        args.gossip.gossip_node.clone(),
+        cancel.clone(),
+    ));
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
@@ -469,7 +440,6 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             Ok(connection) => connection,
             Err(cause) => {
                 tracing::warn!("error accepting connection: {}", cause);
-                // if accept fails, we want to continue accepting connections
                 continue;
             }
         };
@@ -479,12 +449,15 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             Ok(x) => x,
             Err(cause) => {
                 tracing::warn!("error accepting stream: {}", cause);
-                // if accept_bi fails, we want to continue accepting connections
                 continue;
             }
         };
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
-        auth_accept(&mut s, &mut r, &key).await?;
+        let rpc_id = rpc::auth_accept(&mut s, &mut r, &key).await?;
+        match rpc::dispatch_rpc(rpc_id, &mut s, &mut r, &node_map).await? {
+            RpcOutcome::Handled => continue,
+            RpcOutcome::DataForward => {}
+        }
         if args.recv_only {
             tracing::info!(
                 "forwarding stdout to {} (ignoring stdin)",
@@ -495,9 +468,10 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
             tracing::info!("forwarding stdin/stdout to {}", remote_endpoint_id);
             forward_bidi(tokio::io::stdin(), tokio::io::stdout(), r, s).await?;
         }
-        // stop accepting connections after the first successful one
+        // stop accepting connections after the first data connection
         break;
     }
+    cancel.cancel();
     Ok(())
 }
 
@@ -516,7 +490,7 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     // open a bidi stream, try only once
     let (mut s, mut r) = connection.open_bi().await.anyerr()?;
     tracing::info!("opened bidi stream to {}", remote_endpoint_id);
-    auth_connect(&mut s, &mut r, &key).await?;
+    rpc::auth_connect(&mut s, &mut r, &key, rpc::RPC_DATA).await?;
     if args.recv_only {
         tracing::info!(
             "forwarding stdout to {} (ignoring stdin)",
@@ -574,7 +548,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
             .open_bi()
             .await
             .std_context(format!("error opening bidi stream to {remote_endpoint_id}"))?;
-        auth_connect(&mut endpoint_send, &mut endpoint_recv, &key).await?;
+        rpc::auth_connect(&mut endpoint_send, &mut endpoint_recv, &key, rpc::RPC_DATA).await?;
         forward_bidi(tcp_recv, tcp_send, endpoint_recv, endpoint_send).await?;
         Ok::<_, AnyError>(())
     }
@@ -617,7 +591,21 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
     }
     let addr = endpoint.addr();
     let short = create_short_ticket(&addr);
-    let ticket = EndpointTicket::new(addr);
+    let ticket = EndpointTicket::new(addr.clone());
+
+    let node_name = resolve_node_name(&args.gossip);
+    let node_map = NodeMap::new(node_name.clone(), addr.clone());
+    let cancel = CancellationToken::new();
+
+    // Spawn gossip loop.
+    let _gossip_handle = tokio::spawn(dumbvpn::gossip::gossip_loop(
+        endpoint.clone(),
+        key,
+        node_map.clone(),
+        node_name,
+        args.gossip.gossip_node.clone(),
+        cancel.clone(),
+    ));
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
@@ -643,6 +631,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         accepting: Accepting,
         addrs: Vec<std::net::SocketAddr>,
         key: NetworkKey,
+        node_map: NodeMap,
     ) -> Result<()> {
         let connection = accepting.await.std_context("error accepting connection")?;
         let remote_endpoint_id = &connection.remote_id();
@@ -652,7 +641,11 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
             .await
             .std_context("error accepting stream")?;
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
-        auth_accept(&mut s, &mut r, &key).await?;
+        let rpc_id = rpc::auth_accept(&mut s, &mut r, &key).await?;
+        match rpc::dispatch_rpc(rpc_id, &mut s, &mut r, &node_map).await? {
+            RpcOutcome::Handled => return Ok(()),
+            RpcOutcome::DataForward => {}
+        }
         let connection = tokio::net::TcpStream::connect(addrs.as_slice())
             .await
             .std_context(format!("error connecting to {addrs:?}"))?;
@@ -676,8 +669,9 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
             break;
         };
         let addrs = addrs.clone();
+        let node_map = node_map.clone();
         tokio::spawn(async move {
-            if let Err(cause) = handle_endpoint_accept(connecting, addrs, key).await {
+            if let Err(cause) = handle_endpoint_accept(connecting, addrs, key, node_map).await {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -685,6 +679,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
             }
         });
     }
+    cancel.cancel();
     Ok(())
 }
 
@@ -710,7 +705,21 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     }
     let addr = endpoint.addr();
     let short = create_short_ticket(&addr);
-    let ticket = EndpointTicket::new(addr);
+    let ticket = EndpointTicket::new(addr.clone());
+
+    let node_name = resolve_node_name(&args.gossip);
+    let node_map = NodeMap::new(node_name.clone(), addr.clone());
+    let cancel = CancellationToken::new();
+
+    // Spawn gossip loop.
+    let _gossip_handle = tokio::spawn(dumbvpn::gossip::gossip_loop(
+        endpoint.clone(),
+        key,
+        node_map.clone(),
+        node_name,
+        args.gossip.gossip_node.clone(),
+        cancel.clone(),
+    ));
 
     // print the ticket on stderr so it doesn't interfere with the data itself
     //
@@ -741,6 +750,7 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
         accepting: Accepting,
         socket_path: PathBuf,
         key: NetworkKey,
+        node_map: NodeMap,
     ) -> Result<()> {
         tracing::trace!("accepting connection");
         let connection = accepting.await.std_context("error accepting connection")?;
@@ -751,7 +761,11 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
             .await
             .std_context("error accepting stream")?;
         tracing::info!("accepted bidi stream from {}", remote_endpoint_id);
-        auth_accept(&mut s, &mut r, &key).await?;
+        let rpc_id = rpc::auth_accept(&mut s, &mut r, &key).await?;
+        match rpc::dispatch_rpc(rpc_id, &mut s, &mut r, &node_map).await? {
+            RpcOutcome::Handled => return Ok(()),
+            RpcOutcome::DataForward => {}
+        }
         tracing::trace!("connecting to backend socket {:?}", socket_path);
         let connection = UnixStream::connect(&socket_path)
             .await
@@ -779,8 +793,10 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
             break;
         };
         let socket_path = socket_path.clone();
+        let node_map = node_map.clone();
         tokio::spawn(async move {
-            if let Err(cause) = handle_endpoint_accept(connecting, socket_path, key).await {
+            if let Err(cause) = handle_endpoint_accept(connecting, socket_path, key, node_map).await
+            {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
@@ -788,6 +804,7 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
             }
         });
     }
+    cancel.cancel();
     Ok(())
 }
 
@@ -863,7 +880,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
             .await
             .std_context("error opening bidi stream")?;
         tracing::trace!("bidi stream opened");
-        auth_connect(&mut endpoint_send, &mut endpoint_recv, &key).await?;
+        rpc::auth_connect(&mut endpoint_send, &mut endpoint_recv, &key, rpc::RPC_DATA).await?;
 
         tracing::trace!("starting forward_bidi");
         forward_bidi(unix_recv, unix_send, endpoint_recv, endpoint_send).await?;
@@ -907,6 +924,39 @@ async fn generate_ticket() -> Result<()> {
     Ok(())
 }
 
+async fn list_nodes(args: ListNodesArgs) -> Result<()> {
+    let secret_key = get_or_create_secret()?;
+    let key = NetworkKey::from_passphrase(&args.common.network_secret);
+    let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
+    let addr = args.ticket.endpoint_addr();
+    let remote_endpoint_id = addr.id;
+
+    let connection = endpoint
+        .connect(addr.clone(), dumbvpn::ALPN)
+        .await
+        .anyerr()?;
+    tracing::info!("connected to {}", remote_endpoint_id);
+
+    let (mut s, mut r) = connection.open_bi().await.anyerr()?;
+    rpc::auth_connect(&mut s, &mut r, &key, rpc::RPC_LIST_NODES).await?;
+
+    let resp_data = rpc::read_frame(&mut r, 1024 * 1024).await?;
+    let resp: rpc::ListNodesResponse =
+        postcard::from_bytes(&resp_data).map_err(|e| AnyError::from(e.to_string()))?;
+
+    for node in &resp.nodes {
+        println!("{}\t{}", node.name, node.addr.id);
+        for ip in node.addr.ip_addrs() {
+            println!("  addr: {ip}");
+        }
+        for relay in node.addr.relay_urls() {
+            println!("  relay: {relay}");
+        }
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -925,6 +975,8 @@ async fn main() -> Result<()> {
 
         #[cfg(unix)]
         Commands::ConnectUnix(args) => connect_unix(args).await,
+
+        Commands::ListNodes(args) => list_nodes(args).await,
     };
     match res {
         Ok(()) => std::process::exit(0),

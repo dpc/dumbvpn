@@ -1,3 +1,7 @@
+pub mod gossip;
+pub mod node_map;
+pub mod rpc;
+
 /// The ALPN for dumbvpn.
 ///
 /// It is basically just passing data through 1:1, except that the connecting
@@ -6,3 +10,5 @@ pub const ALPN: &[u8] = b"DUMBPIPEV0";
 
 pub use iroh::{EndpointAddr, SecretKey};
 pub use iroh_tickets::endpoint::EndpointTicket;
+pub use node_map::{NodeInfo, NodeMap};
+pub use rpc::NetworkKey;

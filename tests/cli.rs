@@ -432,10 +432,8 @@ mod unix_socket_tests {
                     std::thread::spawn(move || {
                         let mut buf = vec![0; 1024];
                         if let Ok(n) = stream.read(&mut buf) {
-                            if 0 < n {
-                                if stream.write_all(b"hello from unix").is_ok() {
-                                    stream.shutdown(Shutdown::Write).ok();
-                                }
+                            if 0 < n && stream.write_all(b"hello from unix").is_ok() {
+                                stream.shutdown(Shutdown::Write).ok();
                             }
                         }
                         while 0 < stream.read(&mut buf).unwrap_or(0) {}
@@ -537,4 +535,43 @@ mod unix_socket_tests {
         listen_stderr_thread.join().ok();
         connect_stderr_thread.join().ok();
     }
+}
+
+/// Test that list-nodes returns at least the listener's own entry.
+#[test]
+fn list_nodes_returns_self() {
+    let listen_secret = test_secret();
+    let query_secret = test_secret();
+    let port_file = tempfile::NamedTempFile::new().unwrap();
+    let port_path = port_file.path().to_str().unwrap().to_string();
+
+    let _listen = test_env(
+        duct::cmd(
+            dumbvpn_bin(),
+            ["listen", "--port-path", &port_path, "--node-name", "mynode"],
+        ),
+        &listen_secret,
+    )
+    .stdin_bytes(b"")
+    .stderr_null()
+    .stdout_null()
+    .start()
+    .unwrap();
+
+    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+
+    let output = test_env(
+        duct::cmd(dumbvpn_bin(), ["list-nodes", &ticket]),
+        &query_secret,
+    )
+    .stderr_null()
+    .stdout_capture()
+    .run()
+    .unwrap();
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("mynode"),
+        "expected 'mynode' in output, got: {stdout}"
+    );
 }

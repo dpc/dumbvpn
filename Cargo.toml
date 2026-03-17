@@ -28,6 +28,9 @@ data-encoding = "2.9.0"
 n0-error = "0.1"
 argon2 = "0.5.3"
 hmac = "0.12.1"
+hostname = "0.4"
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
 sha2 = "0.10.9"
 
 [dev-dependencies]
