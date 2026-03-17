@@ -1,12 +1,12 @@
 #![cfg_attr(target_os = "windows", allow(unused_imports, dead_code))]
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 use dumbvpn::{EndpointAddr, EndpointTicket, SecretKey};
 
-// binary path
 fn dumbvpn_bin() -> &'static str {
     env!("CARGO_BIN_EXE_dumbvpn")
 }
@@ -15,33 +15,30 @@ fn wait2() -> Arc<Barrier> {
     Arc::new(Barrier::new(2))
 }
 
-/// Common env vars for all dumbvpn test processes.
-struct TestEndpoint {
+const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pre-generated secret for a test endpoint.
+struct TestSecret {
     secret_hex: String,
-    bind_addr: String,
-    ticket: String,
+    public: iroh::PublicKey,
 }
 
-/// Create a test endpoint configuration with a random secret key and port.
-///
-/// Returns the hex-encoded secret, the bind address string, and a
-/// pre-constructed ticket that the connecting side can use.
-fn test_endpoint() -> TestEndpoint {
+fn test_secret() -> TestSecret {
     let secret = SecretKey::generate(&mut rand::rng());
-    let secret_hex = hex::encode(secret.to_bytes());
-    let port = free_port();
-    let bind_addr = format!("127.0.0.1:{port}");
-    let sock_addr: SocketAddr = bind_addr.parse().unwrap();
-    let addr = EndpointAddr::new(secret.public()).with_ip_addr(sock_addr);
-    let ticket = EndpointTicket::new(addr).to_string();
-    TestEndpoint {
-        secret_hex,
-        bind_addr,
-        ticket,
+    TestSecret {
+        secret_hex: hex::encode(secret.to_bytes()),
+        public: secret.public(),
     }
 }
 
-/// Get a free port by briefly binding to port 0.
+/// Apply common test env vars to a duct command expression.
+fn test_env(cmd: duct::Expression, secret: &TestSecret) -> duct::Expression {
+    cmd.env_remove("RUST_LOG")
+        .env("DUMBVPN_LOCAL_ONLY", "1")
+        .env("IROH_SECRET", &secret.secret_hex)
+}
+
+/// Get a free TCP port by briefly binding to port 0.
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -50,11 +47,30 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// Apply common test env vars to a duct command expression.
-fn test_env(cmd: duct::Expression, ep: &TestEndpoint) -> duct::Expression {
-    cmd.env_remove("RUST_LOG")
-        .env("DUMBVPN_LOCAL_ONLY", "1")
-        .env("IROH_SECRET", &ep.secret_hex)
+/// Poll until a file appears and contains a non-empty value, then return its
+/// contents as a string.
+fn wait_for_file(path: &Path, timeout: Duration) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if !content.is_empty() {
+                return content;
+            }
+        }
+        if Instant::now() >= deadline {
+            panic!("timeout waiting for {}", path.display());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Read the port file written by `--port-path` and construct a ticket.
+fn read_ticket(port_path: &Path, public: &iroh::PublicKey, timeout: Duration) -> String {
+    let port_str = wait_for_file(port_path, timeout);
+    let port: u16 = port_str.trim().parse().unwrap();
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let endpoint_addr = EndpointAddr::new(*public).with_ip_addr(addr);
+    EndpointTicket::new(endpoint_addr).to_string()
 }
 
 /// Poll until a TCP connection to `addr` succeeds, then return the stream.
@@ -77,18 +93,17 @@ fn wait_for_tcp_connect(addr: &str, timeout: Duration) -> TcpStream {
 /// The interaction should stop when both sides have EOF'd.
 #[test]
 fn connect_listen_happy() {
-    let listen_ep = test_endpoint();
-    let connect_ep = test_endpoint();
+    let listen_secret = test_secret();
+    let connect_secret = test_secret();
+    let port_file = tempfile::NamedTempFile::new().unwrap();
+    let port_path = port_file.path().to_str().unwrap().to_string();
 
     let listen_to_connect = b"hello from listen";
     let connect_to_listen = b"hello from connect";
 
     let listen = test_env(
-        duct::cmd(
-            dumbvpn_bin(),
-            ["listen", "--ipv4-addr", &listen_ep.bind_addr],
-        ),
-        &listen_ep,
+        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        &listen_secret,
     )
     .stdin_bytes(listen_to_connect)
     .stderr_null()
@@ -96,9 +111,11 @@ fn connect_listen_happy() {
     .start()
     .unwrap();
 
+    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+
     let connect = test_env(
-        duct::cmd(dumbvpn_bin(), ["connect", &listen_ep.ticket]),
-        &connect_ep,
+        duct::cmd(dumbvpn_bin(), ["connect", &ticket]),
+        &connect_secret,
     )
     .stdin_bytes(connect_to_listen)
     .stderr_null()
@@ -116,8 +133,10 @@ fn connect_listen_happy() {
 /// Tests the basic functionality with a custom ALPN
 #[test]
 fn connect_listen_custom_alpn_happy() {
-    let listen_ep = test_endpoint();
-    let connect_ep = test_endpoint();
+    let listen_secret = test_secret();
+    let connect_secret = test_secret();
+    let port_file = tempfile::NamedTempFile::new().unwrap();
+    let port_path = port_file.path().to_str().unwrap().to_string();
 
     let listen_to_connect = b"hello from listen";
     let connect_to_listen = b"hello from connect";
@@ -127,13 +146,13 @@ fn connect_listen_custom_alpn_happy() {
             dumbvpn_bin(),
             [
                 "listen",
-                "--ipv4-addr",
-                &listen_ep.bind_addr,
+                "--port-path",
+                &port_path,
                 "--custom-alpn",
                 "utf8:mysuperalpn/0.1.0",
             ],
         ),
-        &listen_ep,
+        &listen_secret,
     )
     .stdin_bytes(listen_to_connect)
     .stderr_null()
@@ -141,17 +160,19 @@ fn connect_listen_custom_alpn_happy() {
     .start()
     .unwrap();
 
+    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+
     let connect = test_env(
         duct::cmd(
             dumbvpn_bin(),
             [
                 "connect",
-                &listen_ep.ticket,
+                &ticket,
                 "--custom-alpn",
                 "utf8:mysuperalpn/0.1.0",
             ],
         ),
-        &connect_ep,
+        &connect_secret,
     )
     .stdin_bytes(connect_to_listen)
     .stderr_null()
@@ -172,15 +193,14 @@ fn connect_listen_ctrlc_connect() {
     use nix::sys::signal::{self, Signal};
     use nix::unistd::Pid;
 
-    let listen_ep = test_endpoint();
-    let connect_ep = test_endpoint();
+    let listen_secret = test_secret();
+    let connect_secret = test_secret();
+    let port_file = tempfile::NamedTempFile::new().unwrap();
+    let port_path = port_file.path().to_str().unwrap().to_string();
 
     let listen = test_env(
-        duct::cmd(
-            dumbvpn_bin(),
-            ["listen", "--ipv4-addr", &listen_ep.bind_addr],
-        ),
-        &listen_ep,
+        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        &listen_secret,
     )
     .stdin_bytes(b"hello from listen\n")
     .stderr_null()
@@ -188,9 +208,11 @@ fn connect_listen_ctrlc_connect() {
     .reader()
     .unwrap();
 
+    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+
     let mut connect = test_env(
-        duct::cmd(dumbvpn_bin(), ["connect", &listen_ep.ticket]),
-        &connect_ep,
+        duct::cmd(dumbvpn_bin(), ["connect", &ticket]),
+        &connect_secret,
     )
     .stderr_null()
     .stdout_capture()
@@ -218,30 +240,34 @@ fn connect_listen_ctrlc_listen() {
     use nix::sys::signal::{self, Signal};
     use nix::unistd::Pid;
 
-    let listen_ep = test_endpoint();
-    let connect_ep = test_endpoint();
+    let listen_secret = test_secret();
+    let connect_secret = test_secret();
+    let port_file = tempfile::NamedTempFile::new().unwrap();
+    let port_path = port_file.path().to_str().unwrap().to_string();
 
     let mut listen = test_env(
-        duct::cmd(
-            dumbvpn_bin(),
-            ["listen", "--ipv4-addr", &listen_ep.bind_addr],
-        ),
-        &listen_ep,
+        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        &listen_secret,
     )
     .stderr_null()
     .stdout_capture()
     .reader()
     .unwrap();
+
+    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
 
     let mut connect = test_env(
-        duct::cmd(dumbvpn_bin(), ["connect", &listen_ep.ticket]),
-        &connect_ep,
+        duct::cmd(dumbvpn_bin(), ["connect", &ticket]),
+        &connect_secret,
     )
     .stderr_null()
     .stdout_capture()
     .reader()
     .unwrap();
 
+    // Give the connection time to establish before sending SIGINT.
+    // iroh handles retries internally, but we need the connection to be up
+    // before killing the listener to test graceful shutdown.
     std::thread::sleep(Duration::from_secs(1));
     for pid in listen.pids() {
         signal::kill(Pid::from_raw(pid as i32), Signal::SIGINT).unwrap();
@@ -271,8 +297,10 @@ fn listen_tcp_happy() {
     });
     b2.wait();
 
-    let listen_ep = test_endpoint();
-    let connect_ep = test_endpoint();
+    let listen_secret = test_secret();
+    let connect_secret = test_secret();
+    let port_file = tempfile::NamedTempFile::new().unwrap();
+    let port_path = port_file.path().to_str().unwrap().to_string();
 
     let _listen_tcp = test_env(
         duct::cmd(
@@ -281,20 +309,22 @@ fn listen_tcp_happy() {
                 "listen-tcp",
                 "--host",
                 &host_port,
-                "--ipv4-addr",
-                &listen_ep.bind_addr,
+                "--port-path",
+                &port_path,
             ],
         ),
-        &listen_ep,
+        &listen_secret,
     )
     .stderr_null()
     .stdout_capture()
     .start()
     .unwrap();
 
+    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+
     let connect = test_env(
-        duct::cmd(dumbvpn_bin(), ["connect", &listen_ep.ticket]),
-        &connect_ep,
+        duct::cmd(dumbvpn_bin(), ["connect", &ticket]),
+        &connect_secret,
     )
     .stderr_null()
     .stdout_capture()
@@ -311,15 +341,14 @@ fn connect_tcp_happy() {
     let tcp_port = free_port();
     let host_port = format!("localhost:{tcp_port}");
 
-    let listen_ep = test_endpoint();
-    let connect_ep = test_endpoint();
+    let listen_secret = test_secret();
+    let connect_secret = test_secret();
+    let port_file = tempfile::NamedTempFile::new().unwrap();
+    let port_path = port_file.path().to_str().unwrap().to_string();
 
     let _listen = test_env(
-        duct::cmd(
-            dumbvpn_bin(),
-            ["listen", "--ipv4-addr", &listen_ep.bind_addr],
-        ),
-        &listen_ep,
+        duct::cmd(dumbvpn_bin(), ["listen", "--port-path", &port_path]),
+        &listen_secret,
     )
     .stdin_bytes(b"hello from listen\n")
     .stderr_null()
@@ -327,12 +356,14 @@ fn connect_tcp_happy() {
     .start()
     .unwrap();
 
+    let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+
     let _connect_tcp = test_env(
         duct::cmd(
             dumbvpn_bin(),
-            ["connect-tcp", "--addr", &host_port, &listen_ep.ticket],
+            ["connect-tcp", "--addr", &host_port, &ticket],
         ),
-        &connect_ep,
+        &connect_secret,
     )
     .stderr_null()
     .stdout_null()
@@ -418,13 +449,13 @@ mod unix_socket_tests {
                     std::thread::spawn(move || {
                         let mut buf = vec![0; 1024];
                         if let Ok(n) = stream.read(&mut buf) {
-                            if n > 0 {
+                            if 0 < n {
                                 if stream.write_all(b"hello from unix").is_ok() {
                                     stream.shutdown(Shutdown::Write).ok();
                                 }
                             }
                         }
-                        while stream.read(&mut buf).unwrap_or(0) > 0 {}
+                        while 0 < stream.read(&mut buf).unwrap_or(0) {}
                     });
                 } else {
                     break;
@@ -454,22 +485,23 @@ mod unix_socket_tests {
             panic!("backend server not connectable after 5s");
         }
 
-        let listen_ep = test_endpoint();
-        let connect_ep = test_endpoint();
+        let listen_secret = test_secret();
+        let connect_secret = test_secret();
+        let port_file = tempfile::NamedTempFile::new().unwrap();
+        let port_path = port_file.path().to_str().unwrap().to_string();
 
         // Launch listen-unix targeting the backend.
-
         let mut listen_proc = std::process::Command::new(dumbvpn_bin())
             .args([
                 "listen-unix",
                 "--socket-path",
                 backend_sock.to_str().unwrap(),
-                "--ipv4-addr",
-                &listen_ep.bind_addr,
+                "--port-path",
+                &port_path,
             ])
             .env_remove("RUST_LOG")
             .env("DUMBVPN_LOCAL_ONLY", "1")
-            .env("IROH_SECRET", &listen_ep.secret_hex)
+            .env("IROH_SECRET", &listen_secret.secret_hex)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -478,17 +510,19 @@ mod unix_socket_tests {
         let listen_stderr = listen_proc.stderr.take().unwrap();
         let listen_stderr_thread = drain_stderr(listen_stderr, "listen-unix-stderr");
 
+        let ticket = read_ticket(port_file.path(), &listen_secret.public, TIMEOUT);
+
         // Launch connect-unix, exposing the client socket.
         let mut connect_proc = std::process::Command::new(dumbvpn_bin())
             .args([
                 "connect-unix",
                 "--socket-path",
                 client_sock.to_str().unwrap(),
-                &listen_ep.ticket,
+                &ticket,
             ])
             .env_remove("RUST_LOG")
             .env("DUMBVPN_LOCAL_ONLY", "1")
-            .env("IROH_SECRET", &connect_ep.secret_hex)
+            .env("IROH_SECRET", &connect_secret.secret_hex)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()

@@ -1,6 +1,7 @@
 //! Command line arguments.
 use std::io;
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -10,14 +11,11 @@ use iroh::endpoint::{presets, Accepting};
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-#[cfg(unix)]
-use {
-    std::path::PathBuf,
-    tokio::net::{UnixListener, UnixStream},
-};
 
 const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -133,6 +131,12 @@ pub struct CommonArgs {
     /// `utf8:`. Otherwise, it will be parsed as a hex string.
     #[clap(long)]
     pub custom_alpn: Option<String>,
+
+    /// Write the bound port number to a file.
+    ///
+    /// Useful for scripting and testing where the port is assigned by the OS.
+    #[clap(long)]
+    pub port_path: Option<PathBuf>,
 
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
@@ -328,6 +332,12 @@ async fn create_endpoint(
         builder = builder.bind_addr(addr)?;
     }
     let endpoint = builder.bind().await.anyerr()?;
+    if let Some(path) = &common.port_path {
+        // Write the first bound port so tests/scripts can discover it.
+        if let Some(addr) = endpoint.bound_sockets().first() {
+            std::fs::write(path, addr.port().to_string()).std_context("writing port file")?;
+        }
+    }
     Ok(endpoint)
 }
 
