@@ -173,3 +173,7 @@ echo request1.bin | dumbpipe connect <ticket> --custom-alpn utf8:/iroh-bytes/2 >
 
 if request1.bin contained a valid request for the `/iroh-bytes/2` protocol, response1.bin will
 now contain the response.
+
+## AI usage disclosure
+
+[I use LLMs when working on my projects.](https://dpc.pw/posts/personal-ai-usage-disclosure/)

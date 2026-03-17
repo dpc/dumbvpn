@@ -32,6 +32,12 @@ duct = "0.13.6"
 nix = { version = "0.29", features = ["signal", "process"] }
 tempfile = "3.8"
 
+[profile.ci]
+debug = "line-tables-only"
+incremental = false
+inherits = "dev"
+lto = "off"
+
 [profile.release]
 panic = "abort"
 opt-level = "s"

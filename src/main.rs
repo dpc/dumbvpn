@@ -1,23 +1,17 @@
 //! Command line arguments.
-use std::{
-    io,
-    net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
-    str::FromStr,
-    time::Duration,
-};
+use std::io;
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
+use std::str::FromStr;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use dumbpipe::EndpointTicket;
-use iroh::{
-    endpoint::{presets, Accepting},
-    Endpoint, EndpointAddr, SecretKey,
-};
+use iroh::endpoint::{presets, Accepting};
+use iroh::{Endpoint, EndpointAddr, SecretKey};
 use n0_error::{bail_any, ensure_any, AnyError, Result, StdResultExt};
-use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
-    select,
-    time::timeout,
-};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::select;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 #[cfg(unix)]
 use {
@@ -32,9 +26,9 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 /// One side listens, the other side connects. Both sides are identified by a
 /// 32 byte endpoint id.
 ///
-/// Connecting to a endpoint id is independent of its IP address. Dumbpipe will try
-/// to establish a direct connection even through NATs and firewalls. If that
-/// fails, it will fall back to using a relay server.
+/// Connecting to a endpoint id is independent of its IP address. Dumbpipe will
+/// try to establish a direct connection even through NATs and firewalls. If
+/// that fails, it will fall back to using a relay server.
 ///
 /// For all subcommands, you can specify a secret key using the IROH_SECRET
 /// environment variable. If you don't, a random one will be generated.
@@ -49,11 +43,11 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Generate a short endpoint ticket. This ticket can be used to later connect to a
-    /// listener that is using the same secret key again.
+    /// Generate a short endpoint ticket. This ticket can be used to later
+    /// connect to a listener that is using the same secret key again.
     ///
-    /// This command only really makes sense when you are providing dumbpipe with a
-    /// secret key.
+    /// This command only really makes sense when you are providing dumbpipe
+    /// with a secret key.
     GenerateTicket,
 
     /// Listen on an endpoint and forward stdin/stdout to the first incoming
@@ -63,12 +57,14 @@ pub enum Commands {
     Listen(ListenArgs),
 
     /// Listen on an endpoint and forward incoming connections to the specified
-    /// host and port. Every incoming bidi stream is forwarded to a new connection.
+    /// host and port. Every incoming bidi stream is forwarded to a new
+    /// connection.
     ///
     /// Will print a endpoint ticket on stderr that can be used to connect.
     ///
     /// As far as the endpoint is concerned, this is listening. But it is
-    /// connecting to a TCP socket for which you have to specify the host and port.
+    /// connecting to a TCP socket for which you have to specify the host and
+    /// port.
     ListenTcp(ListenTcpArgs),
 
     /// Connect to an endpoint, open a bidi stream, and forward stdin/stdout.
@@ -82,12 +78,14 @@ pub enum Commands {
     /// A endpoint ticket is required to connect.
     ///
     /// As far as the endpoint is concerned, this is connecting. But it is
-    /// listening on a TCP socket for which you have to specify the interface and port.
+    /// listening on a TCP socket for which you have to specify the interface
+    /// and port.
     ConnectTcp(ConnectTcpArgs),
 
     #[cfg(unix)]
     /// Listen on an endpoint and forward incoming connections to the specified
-    /// Unix socket path. Every incoming bidi stream is forwarded to a new connection.
+    /// Unix socket path. Every incoming bidi stream is forwarded to a new
+    /// connection.
     ///
     /// Will print a endpoint ticket on stderr that can be used to connect.
     ///
@@ -110,15 +108,15 @@ pub enum Commands {
 pub struct CommonArgs {
     /// The IPv4 address that the endpoint will listen on.
     ///
-    /// If None, defaults to a random free port, but it can be useful to specify a fixed
-    /// port, e.g. to configure a firewall rule.
+    /// If None, defaults to a random free port, but it can be useful to specify
+    /// a fixed port, e.g. to configure a firewall rule.
     #[clap(long, default_value = None)]
     pub ipv4_addr: Option<SocketAddrV4>,
 
     /// The IPv6 address that the endpoint will listen on.
     ///
-    /// If None, defaults to a random free port, but it can be useful to specify a fixed
-    /// port, e.g. to configure a firewall rule.
+    /// If None, defaults to a random free port, but it can be useful to specify
+    /// a fixed port, e.g. to configure a firewall rule.
     #[clap(long, default_value = None)]
     pub ipv6_addr: Option<SocketAddrV6>,
 
@@ -127,12 +125,12 @@ pub struct CommonArgs {
     /// This is an expert feature that allows dumbpipe to be used to interact
     /// with existing iroh protocols.
     ///
-    /// When using this option, the connect side must also specify the same ALPN.
-    /// The listen side will not expect a handshake, and the connect side will
-    /// not send one.
+    /// When using this option, the connect side must also specify the same
+    /// ALPN. The listen side will not expect a handshake, and the connect
+    /// side will not send one.
     ///
-    /// Alpns are byte strings. To specify an utf8 string, prefix it with `utf8:`.
-    /// Otherwise, it will be parsed as a hex string.
+    /// Alpns are byte strings. To specify an utf8 string, prefix it with
+    /// `utf8:`. Otherwise, it will be parsed as a hex string.
     #[clap(long)]
     pub custom_alpn: Option<String>,
 
@@ -164,7 +162,8 @@ fn parse_alpn(alpn: &str) -> Result<Vec<u8>> {
 
 #[derive(Parser, Debug)]
 pub struct ListenArgs {
-    /// Immediately close our sending side, indicating that we will not transmit any data
+    /// Immediately close our sending side, indicating that we will not transmit
+    /// any data
     #[clap(long)]
     pub recv_only: bool,
 
@@ -201,7 +200,8 @@ pub struct ConnectArgs {
     /// The endpoint to connect to
     pub ticket: EndpointTicket,
 
-    /// Immediately close our sending side, indicating that we will not transmit any data
+    /// Immediately close our sending side, indicating that we will not transmit
+    /// any data
     #[clap(long)]
     pub recv_only: bool,
 
@@ -360,7 +360,8 @@ async fn forward_bidi(
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![args.common.alpn()?]).await?;
-    // wait for the endpoint to figure out its home relay and addresses before making a ticket
+    // wait for the endpoint to figure out its home relay and addresses before
+    // making a ticket
     if (timeout(ONLINE_TIMEOUT, endpoint.online()).await).is_err() {
         eprintln!("Warning: Failed to connect to the home relay");
     }
@@ -438,8 +439,8 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
     // send the handshake unless we are using a custom alpn
     // when using a custom alpn, everything is up to the user
     if !args.common.is_custom_alpn() {
-        // the connecting side must write first. we don't know if there will be something
-        // on stdin, so just write a handshake.
+        // the connecting side must write first. we don't know if there will be
+        // something on stdin, so just write a handshake.
         s.write_all(&dumbpipe::HANDSHAKE).await.anyerr()?;
     }
     if args.recv_only {
@@ -502,8 +503,8 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
         // send the handshake unless we are using a custom alpn
         // when using a custom alpn, everything is up to the user
         if handshake {
-            // the connecting side must write first. we don't know if there will be something
-            // on stdin, so just write a handshake.
+            // the connecting side must write first. we don't know if there will be
+            // something on stdin, so just write a handshake.
             endpoint_send
                 .write_all(&dumbpipe::HANDSHAKE)
                 .await
@@ -815,8 +816,8 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
         // when using a custom alpn, everything is up to the user
         if handshake {
             tracing::trace!("sending handshake");
-            // the connecting side must write first. we don't know if there will be something
-            // on stdin, so just write a handshake.
+            // the connecting side must write first. we don't know if there will be
+            // something on stdin, so just write a handshake.
             endpoint_send
                 .write_all(&dumbpipe::HANDSHAKE)
                 .await

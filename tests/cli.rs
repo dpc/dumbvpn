@@ -1,11 +1,9 @@
 #![cfg_attr(target_os = "windows", allow(unused_imports, dead_code))]
-use std::{
-    io::{self, Read, Write},
-    net::{TcpListener, TcpStream},
-    str::FromStr,
-    sync::{Arc, Barrier},
-    time::Duration,
-};
+use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::str::FromStr;
+use std::sync::{Arc, Barrier};
+use std::time::Duration;
 
 use dumbpipe::EndpointTicket;
 use rand::Rng;
@@ -15,7 +13,8 @@ fn dumbpipe_bin() -> &'static str {
     env!("CARGO_BIN_EXE_dumbpipe")
 }
 
-/// Read `n` lines from `reader`, returning the bytes read including the newlines.
+/// Read `n` lines from `reader`, returning the bytes read including the
+/// newlines.
 ///
 /// This assumes that the header lines are ASCII and can be parsed byte by byte.
 fn read_ascii_lines(mut n: usize, reader: &mut impl Read) -> io::Result<Vec<u8>> {
@@ -138,10 +137,8 @@ fn connect_listen_custom_alpn_happy() {
 #[cfg(unix)]
 #[test]
 fn connect_listen_ctrlc_connect() {
-    use nix::{
-        sys::signal::{self, Signal},
-        unistd::Pid,
-    };
+    use nix::sys::signal::{self, Signal};
+    use nix::unistd::Pid;
     // the bytes provided by the listen command
     let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
@@ -179,10 +176,8 @@ fn connect_listen_ctrlc_connect() {
 fn connect_listen_ctrlc_listen() {
     use std::time::Duration;
 
-    use nix::{
-        sys::signal::{self, Signal},
-        unistd::Pid,
-    };
+    use nix::sys::signal::{self, Signal};
+    use nix::unistd::Pid;
     // the bytes provided by the listen command
     let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
@@ -260,7 +255,8 @@ fn listen_tcp_happy() {
 fn connect_tcp_happy() {
     let port = random_port();
     let host_port = format!("localhost:{port}");
-    // start a dumbpipe listen process just so the connect-tcp command has something to connect to
+    // start a dumbpipe listen process just so the connect-tcp command has something
+    // to connect to
     let mut listen = duct::cmd(dumbpipe_bin(), ["listen"])
         .env_remove("RUST_LOG") // disable tracing
         .stdin_bytes(b"hello from listen\n")
@@ -302,14 +298,12 @@ fn connect_tcp_happy() {
 /// - The test exchanges messages to assert correct data flow.
 #[cfg(all(test, unix))]
 mod unix_socket_tests {
-    use std::{
-        io::{BufRead, Read, Write},
-        net::Shutdown,
-        os::unix::net::{UnixListener, UnixStream},
-        path::{Path, PathBuf},
-        sync::{Arc, Barrier},
-        time::{Duration, Instant},
-    };
+    use std::io::{BufRead, Read, Write};
+    use std::net::Shutdown;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
 
     use tempfile::TempDir;
 
@@ -355,7 +349,8 @@ mod unix_socket_tests {
         })
     }
 
-    /// A dummy unix server that accepts multiple connections and handles them properly.
+    /// A dummy unix server that accepts multiple connections and handles them
+    /// properly.
     fn dummy_unix_server(
         socket_path: PathBuf,
         barrier: Arc<Barrier>,
