@@ -883,7 +883,9 @@ async fn generate_ticket() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
     let args = Args::parse();
     let res = match args.command {
         Commands::GenerateTicket => generate_ticket().await,
