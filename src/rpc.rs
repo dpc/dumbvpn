@@ -154,10 +154,14 @@ pub async fn dispatch_rpc(
         RPC_DATA => Ok(RpcOutcome::DataForward),
         RPC_GOSSIP => {
             handle_gossip(send, recv, node_map).await?;
+            send.finish().anyerr()?;
+            send.stopped().await.anyerr()?;
             Ok(RpcOutcome::Handled)
         }
         RPC_LIST_NODES => {
             handle_list_nodes(send, node_map).await?;
+            send.finish().anyerr()?;
+            send.stopped().await.anyerr()?;
             Ok(RpcOutcome::Handled)
         }
         other => bail_any!("unknown RPC ID: {other}"),

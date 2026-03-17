@@ -38,6 +38,7 @@ const TEST_NETWORK_SECRET: &str = "test-network-secret";
 fn test_env(cmd: duct::Expression, secret: &TestSecret) -> duct::Expression {
     cmd.env_remove("RUST_LOG")
         .env("DUMBVPN_LOCAL_ONLY", "1")
+        .env("DUMBVPN_PUBLIC", "true")
         .env("IROH_SECRET", &secret.secret_hex)
         .env("DUMBVPN_NETWORK_SECRET", TEST_NETWORK_SECRET)
 }
@@ -115,6 +116,7 @@ fn connect_listen_wrong_secret() {
     let connect = duct::cmd(dumbvpn_bin(), ["connect", &ticket])
         .env_remove("RUST_LOG")
         .env("DUMBVPN_LOCAL_ONLY", "1")
+        .env("DUMBVPN_PUBLIC", "true")
         .env("IROH_SECRET", &connect_secret.secret_hex)
         .env("DUMBVPN_NETWORK_SECRET", "wrong-secret")
         .stdin_bytes(b"hello from connect")
@@ -482,6 +484,7 @@ mod unix_socket_tests {
             ])
             .env_remove("RUST_LOG")
             .env("DUMBVPN_LOCAL_ONLY", "1")
+            .env("DUMBVPN_PUBLIC", "true")
             .env("IROH_SECRET", &listen_secret.secret_hex)
             .env("DUMBVPN_NETWORK_SECRET", TEST_NETWORK_SECRET)
             .stdout(std::process::Stdio::null())
@@ -504,6 +507,7 @@ mod unix_socket_tests {
             ])
             .env_remove("RUST_LOG")
             .env("DUMBVPN_LOCAL_ONLY", "1")
+            .env("DUMBVPN_PUBLIC", "true")
             .env("IROH_SECRET", &connect_secret.secret_hex)
             .env("DUMBVPN_NETWORK_SECRET", TEST_NETWORK_SECRET)
             .stdout(std::process::Stdio::null())
@@ -538,8 +542,13 @@ mod unix_socket_tests {
 }
 
 /// Test that list-nodes returns at least the listener's own entry.
+///
+/// Uses listen-tcp so the listener stays alive (no stdin dependency).
 #[test]
 fn list_nodes_returns_self() {
+    let tcp_port = free_port();
+    let host_port = format!("localhost:{tcp_port}");
+
     let listen_secret = test_secret();
     let query_secret = test_secret();
     let port_file = tempfile::NamedTempFile::new().unwrap();
@@ -548,11 +557,18 @@ fn list_nodes_returns_self() {
     let _listen = test_env(
         duct::cmd(
             dumbvpn_bin(),
-            ["listen", "--port-path", &port_path, "--node-name", "mynode"],
+            [
+                "listen-tcp",
+                "--host",
+                &host_port,
+                "--port-path",
+                &port_path,
+                "--node-name",
+                "mynode",
+            ],
         ),
         &listen_secret,
     )
-    .stdin_bytes(b"")
     .stderr_null()
     .stdout_null()
     .start()

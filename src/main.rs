@@ -136,6 +136,11 @@ pub struct CommonArgs {
     #[clap(long)]
     pub port_path: Option<PathBuf>,
 
+    /// Enable direct IP connections (exposes your IP address).
+    /// By default, only relay connections are used for privacy.
+    #[clap(long, env = "DUMBVPN_PUBLIC")]
+    pub public: bool,
+
     /// The verbosity level. Repeat to increase verbosity.
     #[clap(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
@@ -331,6 +336,9 @@ async fn create_endpoint(
         builder = builder
             .relay_mode(RelayMode::Disabled)
             .clear_address_lookup();
+    }
+    if !common.public {
+        builder = builder.clear_ip_transports();
     }
     if let Some(addr) = common.ipv4_addr {
         builder = builder.bind_addr(addr)?;
