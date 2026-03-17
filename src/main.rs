@@ -43,13 +43,6 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Generate a short endpoint ticket. This ticket can be used to later
-    /// connect to a listener that is using the same secret key again.
-    ///
-    /// This command only really makes sense when you are providing dumbvpn
-    /// with a secret key.
-    GenerateTicket,
-
     /// Listen on an endpoint and forward stdin/stdout to the first incoming
     /// bidi stream.
     ///
@@ -923,15 +916,6 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     Ok(())
 }
 
-async fn generate_ticket() -> Result<()> {
-    let secret_key = get_or_create_secret()?;
-    let public_key = secret_key.public();
-    let addr = EndpointAddr::new(public_key);
-    let ticket = EndpointTicket::new(addr);
-    println!("{}", ticket);
-    Ok(())
-}
-
 async fn list_nodes(args: ListNodesArgs) -> Result<()> {
     let secret_key = get_or_create_secret()?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
@@ -972,7 +956,6 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     let res = match args.command {
-        Commands::GenerateTicket => generate_ticket().await,
         Commands::Listen(args) => listen_stdio(args).await,
         Commands::ListenTcp(args) => listen_tcp(args).await,
         Commands::Connect(args) => connect_stdio(args).await,
