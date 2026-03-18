@@ -42,61 +42,53 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Listen on an endpoint and forward stdin/stdout to the first incoming
-    /// bidi stream.
-    ///
-    /// Will print a endpoint ticket on stderr that can be used to connect.
-    Listen(ListenArgs),
+    /// Listen on an endpoint and forward incoming connections to a local
+    /// target.
+    Listen(ListenCommand),
 
-    /// Listen on an endpoint and forward incoming connections to the specified
-    /// host and port. Every incoming bidi stream is forwarded to a new
-    /// connection.
-    ///
-    /// Will print a endpoint ticket on stderr that can be used to connect.
-    ///
-    /// As far as the endpoint is concerned, this is listening. But it is
-    /// connecting to a TCP socket for which you have to specify the host and
-    /// port.
-    ListenTcp(ListenTcpArgs),
-
-    /// Connect to an endpoint, open a bidi stream, and forward stdin/stdout.
-    ///
-    /// A endpoint ticket is required to connect.
-    Connect(ConnectArgs),
-
-    /// Connect to an endpoint, open a bidi stream, and forward stdin/stdout
-    /// to it.
-    ///
-    /// A endpoint ticket is required to connect.
-    ///
-    /// As far as the endpoint is concerned, this is connecting. But it is
-    /// listening on a TCP socket for which you have to specify the interface
-    /// and port.
-    ConnectTcp(ConnectTcpArgs),
-
-    #[cfg(unix)]
-    /// Listen on an endpoint and forward incoming connections to the specified
-    /// Unix socket path. Every incoming bidi stream is forwarded to a new
-    /// connection.
-    ///
-    /// Will print a endpoint ticket on stderr that can be used to connect.
-    ///
-    /// As far as the endpoint is concerned, this is listening. But it is
-    /// connecting to a Unix socket for which you have to specify the path.
-    ListenUnix(ListenUnixArgs),
-
-    #[cfg(unix)]
-    /// Connect to an endpoint, open a bidi stream, and forward connections
-    /// from the specified Unix socket path.
-    ///
-    /// A endpoint ticket is required to connect.
-    ///
-    /// As far as the endpoint is concerned, this is connecting. But it is
-    /// listening on a Unix socket for which you have to specify the path.
-    ConnectUnix(ConnectUnixArgs),
+    /// Connect to a remote endpoint and forward local I/O to it.
+    Connect(ConnectCommand),
 
     /// Query a listening node for all known nodes in the network.
     ListNodes(ListNodesArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct ListenCommand {
+    #[clap(subcommand)]
+    pub mode: ListenMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ListenMode {
+    /// Forward stdin/stdout to incoming bidi streams.
+    Stdio(ListenArgs),
+
+    /// Forward incoming connections to the specified host and port.
+    Tcp(ListenTcpArgs),
+
+    #[cfg(unix)]
+    /// Forward incoming connections to the specified Unix socket path.
+    Unix(ListenUnixArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct ConnectCommand {
+    #[clap(subcommand)]
+    pub mode: ConnectMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConnectMode {
+    /// Forward stdin/stdout to a remote endpoint.
+    Stdio(ConnectArgs),
+
+    /// Listen on a TCP port and forward connections to a remote endpoint.
+    Tcp(ConnectTcpArgs),
+
+    #[cfg(unix)]
+    /// Listen on a Unix socket and forward connections to a remote endpoint.
+    Unix(ConnectUnixArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -924,17 +916,18 @@ async fn main() -> Result<()> {
         .init();
     let args = Args::parse();
     let res = match args.command {
-        Commands::Listen(args) => listen_stdio(args).await,
-        Commands::ListenTcp(args) => listen_tcp(args).await,
-        Commands::Connect(args) => connect_stdio(args).await,
-        Commands::ConnectTcp(args) => connect_tcp(args).await,
-
-        #[cfg(unix)]
-        Commands::ListenUnix(args) => listen_unix(args).await,
-
-        #[cfg(unix)]
-        Commands::ConnectUnix(args) => connect_unix(args).await,
-
+        Commands::Listen(cmd) => match cmd.mode {
+            ListenMode::Stdio(args) => listen_stdio(args).await,
+            ListenMode::Tcp(args) => listen_tcp(args).await,
+            #[cfg(unix)]
+            ListenMode::Unix(args) => listen_unix(args).await,
+        },
+        Commands::Connect(cmd) => match cmd.mode {
+            ConnectMode::Stdio(args) => connect_stdio(args).await,
+            ConnectMode::Tcp(args) => connect_tcp(args).await,
+            #[cfg(unix)]
+            ConnectMode::Unix(args) => connect_unix(args).await,
+        },
         Commands::ListNodes(args) => list_nodes(args).await,
     };
     match res {

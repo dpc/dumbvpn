@@ -117,7 +117,7 @@ fn connect_listen_wrong_secret() {
     let _listen = test_env(
         duct::cmd(
             dumbvpn_bin(),
-            ["listen", "--one-shot", "--port-path", &port_path],
+            ["listen", "stdio", "--one-shot", "--port-path", &port_path],
         ),
         &listen_secret,
     )
@@ -130,7 +130,7 @@ fn connect_listen_wrong_secret() {
     let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
 
     // Connect with a different network secret — should fail.
-    let mut args = vec!["connect"];
+    let mut args = vec!["connect", "stdio"];
     args.extend(target.connect_args());
     let connect = duct::cmd(dumbvpn_bin(), &args)
         .env_remove("RUST_LOG")
@@ -165,7 +165,7 @@ fn connect_listen_happy() {
     let listen = test_env(
         duct::cmd(
             dumbvpn_bin(),
-            ["listen", "--one-shot", "--port-path", &port_path],
+            ["listen", "stdio", "--one-shot", "--port-path", &port_path],
         ),
         &listen_secret,
     )
@@ -176,7 +176,7 @@ fn connect_listen_happy() {
     .unwrap();
 
     let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
-    let mut args = vec!["connect"];
+    let mut args = vec!["connect", "stdio"];
     args.extend(target.connect_args());
 
     let connect = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
@@ -207,7 +207,7 @@ fn connect_listen_ctrlc_connect() {
     let listen = test_env(
         duct::cmd(
             dumbvpn_bin(),
-            ["listen", "--one-shot", "--port-path", &port_path],
+            ["listen", "stdio", "--one-shot", "--port-path", &port_path],
         ),
         &listen_secret,
     )
@@ -218,7 +218,7 @@ fn connect_listen_ctrlc_connect() {
     .unwrap();
 
     let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
-    let mut args = vec!["connect"];
+    let mut args = vec!["connect", "stdio"];
     args.extend(target.connect_args());
 
     let mut connect = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
@@ -256,7 +256,7 @@ fn connect_listen_ctrlc_listen() {
     let mut listen = test_env(
         duct::cmd(
             dumbvpn_bin(),
-            ["listen", "--one-shot", "--port-path", &port_path],
+            ["listen", "stdio", "--one-shot", "--port-path", &port_path],
         ),
         &listen_secret,
     )
@@ -266,7 +266,7 @@ fn connect_listen_ctrlc_listen() {
     .unwrap();
 
     let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
-    let mut args = vec!["connect"];
+    let mut args = vec!["connect", "stdio"];
     args.extend(target.connect_args());
 
     let mut connect = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
@@ -316,7 +316,8 @@ fn listen_tcp_happy() {
         duct::cmd(
             dumbvpn_bin(),
             [
-                "listen-tcp",
+                "listen",
+                "tcp",
                 "--host",
                 &host_port,
                 "--port-path",
@@ -331,7 +332,7 @@ fn listen_tcp_happy() {
     .unwrap();
 
     let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
-    let mut args = vec!["connect"];
+    let mut args = vec!["connect", "stdio"];
     args.extend(target.connect_args());
 
     let connect = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
@@ -358,7 +359,7 @@ fn connect_tcp_happy() {
     let _listen = test_env(
         duct::cmd(
             dumbvpn_bin(),
-            ["listen", "--one-shot", "--port-path", &port_path],
+            ["listen", "stdio", "--one-shot", "--port-path", &port_path],
         ),
         &listen_secret,
     )
@@ -369,7 +370,7 @@ fn connect_tcp_happy() {
     .unwrap();
 
     let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
-    let mut args = vec!["connect-tcp", "--addr", &host_port];
+    let mut args = vec!["connect", "tcp", "--addr", &host_port];
     args.extend(target.connect_args());
 
     let _connect_tcp = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
@@ -499,7 +500,8 @@ mod unix_socket_tests {
         // Launch listen-unix targeting the backend.
         let mut listen_proc = std::process::Command::new(dumbvpn_bin())
             .args([
-                "listen-unix",
+                "listen",
+                "unix",
                 "--socket-path",
                 backend_sock.to_str().unwrap(),
                 "--port-path",
@@ -523,7 +525,8 @@ mod unix_socket_tests {
         // Launch connect-unix, exposing the client socket.
         let mut connect_proc = std::process::Command::new(dumbvpn_bin())
             .args([
-                "connect-unix",
+                "connect",
+                "unix",
                 "--socket-path",
                 client_sock.to_str().unwrap(),
                 &target.node_id,
@@ -583,7 +586,8 @@ fn list_nodes_returns_self() {
         duct::cmd(
             dumbvpn_bin(),
             [
-                "listen-tcp",
+                "listen",
+                "tcp",
                 "--host",
                 &host_port,
                 "--port-path",
