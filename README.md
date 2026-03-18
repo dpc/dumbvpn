@@ -32,6 +32,12 @@ Connect and bind locally on a different system:
 > dumbvpn connect tcp --network-secret xyzlongsecret --bind localhost:2346 8d3d8f2fe27fa9cb5e197b9cd3705013ffd75f9d21f2d88fcf48b8b6b87d4cf8
 ```
 
+Or directly using ssh:
+
+```
+ssh -o ProxyCommand="dumbvpn connect stdio --network-secret xyzlongsecret 8d3d8f2fe27fa9cb5e197b9cd3705013ffd75f9d21f2d88fcf48b8b6b87d4cf8" foo
+```
+
 Advertise current node addr via gossip to another instance:
 
 ```

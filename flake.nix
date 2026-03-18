@@ -77,6 +77,8 @@
       in
       {
         packages.default = multiBuild.${projectName};
+        packages.dumbvpn = multiBuild.${projectName};
+
         legacyPackages = multiBuild;
 
         devShells = flakeboxLib.mkShells {
