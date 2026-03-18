@@ -201,7 +201,7 @@ async fn handle_gossip(
 async fn handle_list_nodes(send: &mut noq::SendStream, node_map: &NodeMap) -> Result<()> {
     let nodes = node_map.list().await;
 
-    tracing::info!("list-nodes: returning {} nodes", nodes.len());
+    tracing::debug!("list-nodes: returning {} nodes", nodes.len());
 
     let resp = ListNodesResponse { nodes };
     let data = postcard::to_allocvec(&resp).map_err(|e| AnyError::from(e.to_string()))?;

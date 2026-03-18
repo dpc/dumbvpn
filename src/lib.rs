@@ -1,3 +1,4 @@
+pub mod env;
 pub mod gossip;
 pub mod node_map;
 pub mod rpc;

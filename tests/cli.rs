@@ -37,10 +37,10 @@ const TEST_NETWORK_SECRET: &str = "test-network-secret";
 /// Apply common test env vars to a duct command expression.
 fn test_env(cmd: duct::Expression, secret: &TestSecret) -> duct::Expression {
     cmd.env_remove("RUST_LOG")
-        .env("DUMBVPN_LOCAL_ONLY", "1")
-        .env("DUMBVPN_PUBLIC", "true")
-        .env("IROH_SECRET", &secret.secret_hex)
-        .env("DUMBVPN_NETWORK_SECRET", TEST_NETWORK_SECRET)
+        .env(dumbvpn::env::LOCAL_ONLY, "1")
+        .env(dumbvpn::env::PUBLIC, "true")
+        .env(dumbvpn::env::IROH_SECRET, &secret.secret_hex)
+        .env(dumbvpn::env::NETWORK_SECRET, TEST_NETWORK_SECRET)
 }
 
 /// Get a free TCP port by briefly binding to port 0.
@@ -134,10 +134,10 @@ fn connect_listen_wrong_secret() {
     args.extend(target.connect_args());
     let connect = duct::cmd(dumbvpn_bin(), &args)
         .env_remove("RUST_LOG")
-        .env("DUMBVPN_LOCAL_ONLY", "1")
-        .env("DUMBVPN_PUBLIC", "true")
-        .env("IROH_SECRET", &connect_secret.secret_hex)
-        .env("DUMBVPN_NETWORK_SECRET", "wrong-secret")
+        .env(dumbvpn::env::LOCAL_ONLY, "1")
+        .env(dumbvpn::env::PUBLIC, "true")
+        .env(dumbvpn::env::IROH_SECRET, &connect_secret.secret_hex)
+        .env(dumbvpn::env::NETWORK_SECRET, "wrong-secret")
         .stdin_bytes(b"hello from connect")
         .stderr_null()
         .stdout_capture()
@@ -370,7 +370,7 @@ fn connect_tcp_happy() {
     .unwrap();
 
     let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
-    let mut args = vec!["connect", "tcp", "--addr", &host_port];
+    let mut args = vec!["connect", "tcp", "--bind", &host_port];
     args.extend(target.connect_args());
 
     let _connect_tcp = test_env(duct::cmd(dumbvpn_bin(), &args), &connect_secret)
@@ -508,10 +508,10 @@ mod unix_socket_tests {
                 &port_path,
             ])
             .env_remove("RUST_LOG")
-            .env("DUMBVPN_LOCAL_ONLY", "1")
-            .env("DUMBVPN_PUBLIC", "true")
-            .env("IROH_SECRET", &listen_secret.secret_hex)
-            .env("DUMBVPN_NETWORK_SECRET", TEST_NETWORK_SECRET)
+            .env(dumbvpn::env::LOCAL_ONLY, "1")
+            .env(dumbvpn::env::PUBLIC, "true")
+            .env(dumbvpn::env::IROH_SECRET, &listen_secret.secret_hex)
+            .env(dumbvpn::env::NETWORK_SECRET, TEST_NETWORK_SECRET)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -534,10 +534,10 @@ mod unix_socket_tests {
                 &target.direct_addr,
             ])
             .env_remove("RUST_LOG")
-            .env("DUMBVPN_LOCAL_ONLY", "1")
-            .env("DUMBVPN_PUBLIC", "true")
-            .env("IROH_SECRET", &connect_secret.secret_hex)
-            .env("DUMBVPN_NETWORK_SECRET", TEST_NETWORK_SECRET)
+            .env(dumbvpn::env::LOCAL_ONLY, "1")
+            .env(dumbvpn::env::PUBLIC, "true")
+            .env(dumbvpn::env::IROH_SECRET, &connect_secret.secret_hex)
+            .env(dumbvpn::env::NETWORK_SECRET, TEST_NETWORK_SECRET)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -604,7 +604,7 @@ fn list_nodes_returns_self() {
     .unwrap();
 
     let target = read_node_addr(port_file.path(), &listen_secret.public, TIMEOUT);
-    let mut args = vec!["list-nodes"];
+    let mut args = vec!["list", "nodes"];
     args.extend(target.connect_args());
 
     let output = test_env(duct::cmd(dumbvpn_bin(), &args), &query_secret)

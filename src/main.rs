@@ -29,8 +29,9 @@ const ONLINE_TIMEOUT: Duration = Duration::from_secs(5);
 /// try to establish a direct connection even through NATs and firewalls. If
 /// that fails, it will fall back to using a relay server.
 ///
-/// For all subcommands, you can specify a secret key using the IROH_SECRET
-/// environment variable. If you don't, a random one will be generated.
+/// For all subcommands, you can specify a secret key using the --iroh-secret
+/// flag or the DUMBVPN_IROH_SECRET environment variable. If you don't, a
+/// random one will be generated.
 ///
 /// You can also specify a port for the endpoint. If you don't, a random one
 /// will be chosen.
@@ -49,8 +50,11 @@ pub enum Commands {
     /// Connect to a remote endpoint and forward local I/O to it.
     Connect(ConnectCommand),
 
-    /// Query a listening node for all known nodes in the network.
-    ListNodes(ListNodesArgs),
+    /// Generate keys and other resources.
+    Generate(GenerateCommand),
+
+    /// Query and manage the network.
+    List(ListCommand),
 }
 
 #[derive(Parser, Debug)]
@@ -92,6 +96,33 @@ pub enum ConnectMode {
 }
 
 #[derive(Parser, Debug)]
+pub struct ListCommand {
+    #[clap(subcommand)]
+    pub mode: ListMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ListMode {
+    /// Query a listening node for all known nodes in the network.
+    Nodes(ListNodesArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct GenerateCommand {
+    #[clap(subcommand)]
+    pub mode: GenerateMode,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GenerateMode {
+    /// Generate a random iroh secret key and print it to stdout.
+    ///
+    /// The output can be used with --iroh-secret or the DUMBVPN_IROH_SECRET
+    /// environment variable to give a node a persistent identity.
+    Secret,
+}
+
+#[derive(Parser, Debug)]
 pub struct CommonArgs {
     /// The IPv4 address that the endpoint will listen on.
     ///
@@ -107,11 +138,16 @@ pub struct CommonArgs {
     #[clap(long, default_value = None)]
     pub ipv6_addr: Option<SocketAddrV6>,
 
+    /// Hex-encoded Ed25519 secret key for persistent endpoint identity.
+    /// If not provided, a random key is generated.
+    #[clap(long, env = dumbvpn::env::IROH_SECRET)]
+    pub iroh_secret: Option<String>,
+
     /// The shared network secret for authentication.
     ///
     /// Both sides of a connection must use the same network secret.
     /// The secret is stretched using argon2id before use.
-    #[clap(long, env = "DUMBVPN_NETWORK_SECRET")]
+    #[clap(long, env = dumbvpn::env::NETWORK_SECRET)]
     pub network_secret: String,
 
     /// Write the bound port number to a file.
@@ -122,7 +158,7 @@ pub struct CommonArgs {
 
     /// Enable direct IP connections (exposes your IP address).
     /// By default, only relay connections are used for privacy.
-    #[clap(long, env = "DUMBVPN_PUBLIC")]
+    #[clap(long, env = dumbvpn::env::PUBLIC)]
     pub public: bool,
 
     /// The verbosity level. Repeat to increase verbosity.
@@ -174,11 +210,11 @@ pub struct ListenTcpArgs {
 
 #[derive(Parser, Debug)]
 pub struct ConnectTcpArgs {
-    /// The addresses to listen on for incoming tcp connections.
+    /// The local address to bind for incoming tcp connections.
     ///
     /// To listen on all network interfaces, use 0.0.0.0:12345
     #[clap(long)]
-    pub addr: String,
+    pub bind: String,
 
     /// The endpoint ID to connect to
     pub node_id: PublicKey,
@@ -311,11 +347,11 @@ async fn copy_from_noq(
     }
 }
 
-/// Get the secret key or generate a new one.
-fn get_or_create_secret() -> Result<SecretKey> {
-    match std::env::var("IROH_SECRET") {
-        Ok(secret) => SecretKey::from_str(&secret).std_context("invalid secret"),
-        Err(_) => Ok(SecretKey::generate(&mut rand::rng())),
+/// Get the secret key from args or generate a new one.
+fn get_or_create_secret(iroh_secret: &Option<String>) -> Result<SecretKey> {
+    match iroh_secret {
+        Some(secret) => SecretKey::from_str(secret).std_context("invalid secret"),
+        None => Ok(SecretKey::generate(&mut rand::rng())),
     }
 }
 
@@ -324,7 +360,7 @@ fn get_or_create_secret() -> Result<SecretKey> {
 /// This is useful for testing in sandboxed environments where no outgoing
 /// network connections are allowed.
 fn is_local_only() -> bool {
-    std::env::var("DUMBVPN_LOCAL_ONLY").is_ok()
+    std::env::var(dumbvpn::env::LOCAL_ONLY).is_ok()
 }
 
 /// Create a new iroh endpoint.
@@ -410,7 +446,7 @@ fn resolve_node_name(gossip: &GossipArgs) -> String {
 }
 
 async fn listen_stdio(args: ListenArgs) -> Result<()> {
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common.iroh_secret)?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![dumbvpn::ALPN.to_vec()]).await?;
     // wait for the endpoint to figure out its home relay and addresses before
@@ -501,7 +537,7 @@ async fn listen_stdio(args: ListenArgs) -> Result<()> {
 }
 
 async fn connect_stdio(args: ConnectArgs) -> Result<()> {
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common.iroh_secret)?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
     let addr = build_endpoint_addr(args.node_id, &args.direct_addr);
@@ -533,10 +569,10 @@ async fn connect_stdio(args: ConnectArgs) -> Result<()> {
 /// Listen on a tcp port and forward incoming connections to an endpoint.
 async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
     let addrs = args
-        .addr
+        .bind
         .to_socket_addrs()
-        .std_context(format!("invalid host string {}", args.addr))?;
-    let secret_key = get_or_create_secret()?;
+        .std_context(format!("invalid host string {}", args.bind))?;
+    let secret_key = get_or_create_secret(&args.common.iroh_secret)?;
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
         .std_context("unable to bind endpoint")?;
@@ -594,7 +630,7 @@ async fn connect_tcp(args: ConnectTcpArgs) -> Result<()> {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
-                tracing::warn!("error handling connection: {}", cause);
+                tracing::debug!("error handling connection: {}", cause);
             }
         });
     }
@@ -607,7 +643,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
         Ok(addrs) => addrs.collect::<Vec<_>>(),
         Err(e) => bail_any!("invalid host string {}: {}", args.host, e),
     };
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common.iroh_secret)?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![dumbvpn::ALPN.to_vec()]).await?;
     // wait for the endpoint to figure out its address before making a ticket
@@ -680,7 +716,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
-                tracing::warn!("error handling connection: {}", cause);
+                tracing::debug!("error handling connection: {}", cause);
             }
         });
     }
@@ -692,7 +728,7 @@ async fn listen_tcp(args: ListenTcpArgs) -> Result<()> {
 /// Listen on an endpoint and forward incoming connections to a Unix socket.
 async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common.iroh_secret)?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![dumbvpn::ALPN.to_vec()]).await?;
     // wait for the endpoint to figure out its address before making a ticket
@@ -771,7 +807,7 @@ async fn listen_unix(args: ListenUnixArgs) -> Result<()> {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
-                tracing::warn!("error handling connection: {}", cause);
+                tracing::debug!("error handling connection: {}", cause);
             }
         });
     }
@@ -800,7 +836,7 @@ impl Drop for UnixSocketGuard {
 /// Listen on a Unix socket and forward connections to an endpoint.
 async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
     let socket_path = args.socket_path.clone();
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common.iroh_secret)?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![])
         .await
@@ -877,7 +913,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
                 // log error at warn level
                 //
                 // we should know about it, but it's not fatal
-                tracing::warn!("error handling connection: {}", cause);
+                tracing::debug!("error handling connection: {}", cause);
             }
             tracing::trace!("handler task finished");
         });
@@ -887,7 +923,7 @@ async fn connect_unix(args: ConnectUnixArgs) -> Result<()> {
 }
 
 async fn list_nodes(args: ListNodesArgs) -> Result<()> {
-    let secret_key = get_or_create_secret()?;
+    let secret_key = get_or_create_secret(&args.common.iroh_secret)?;
     let key = NetworkKey::from_passphrase(&args.common.network_secret);
     let endpoint = create_endpoint(secret_key, &args.common, vec![]).await?;
     let addr = build_endpoint_addr(args.node_id, &args.direct_addr);
@@ -928,7 +964,16 @@ async fn main() -> Result<()> {
             #[cfg(unix)]
             ConnectMode::Unix(args) => connect_unix(args).await,
         },
-        Commands::ListNodes(args) => list_nodes(args).await,
+        Commands::Generate(cmd) => match cmd.mode {
+            GenerateMode::Secret => {
+                let secret = SecretKey::generate(&mut rand::rng());
+                println!("{}", hex::encode(secret.to_bytes()));
+                Ok(())
+            }
+        },
+        Commands::List(cmd) => match cmd.mode {
+            ListMode::Nodes(args) => list_nodes(args).await,
+        },
     };
     match res {
         Ok(()) => std::process::exit(0),
