@@ -53,6 +53,10 @@ foo      8d3d8f2fe27fa9cb5e197b9cd3705013ffd75f9d21f2d88fcf48b8b6b87d4cf8
 somename 9cb5e197b9cd3f9d21f2d88fcf48b8b6b87d4cfa705013ffd758d3d8f2fe27fa
 ```
 
+## Fork acknowledgment
+
+This codebase was started as a fork of [dumbpipe](https://github.com/n0-computer/dumbpipe/).
+
 ## AI usage disclosure
 
 [I use LLMs when working on my projects.](https://dpc.pw/posts/personal-ai-usage-disclosure/)
