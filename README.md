@@ -1,7 +1,7 @@
-# Dumb VPN
+# DumbVPN
 
 
-[Iroh](https://crates.io/crates/iroh) based simple VPN system.
+Simple [Iroh](https://crates.io/crates/iroh)-based VPN system.
 
 Allows exposing tcp/unix sockets as Iroh endpoints, and connect
 to them p2p.
